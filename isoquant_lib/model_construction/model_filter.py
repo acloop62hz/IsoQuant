@@ -13,10 +13,10 @@
 import logging
 
 from ..gene_info import GeneInfo, TranscriptModelType
-from isoquant_lib.model_construction.intron_graph import TerminalVertex
 from ..assignment.isoform_assignment import is_matching_assignment, ReadAssignmentType
 from ..assignment.long_read_assigner import LongReadAssigner
 from ..assignment.long_read_profiles import CombinedProfileConstructor
+from ..assignment.read_direction import read_matches_strand, effective_read_strand
 from ..terminal_prediction.polya_finder import PolyAInfo
 from isoquant_lib.model_construction.transcript_splice_site_corrector import (
     count_deletions_for_splice_site_locations,
@@ -192,35 +192,41 @@ class ModelFilter:
         return True
 
     def _comparison_polya_info(self, model):
-        """Supply supported pt termini only to the model-similarity comparison.
+        """Supply supported termini without reading the model's intron-only path.
 
-        Do not change intron paths, global confirmation flags or construction
-        requirements. Recompute after end refinement, once per model per pass.
+        Reuse assigned-read evidence and the existing count/window gates. Keep
+        pt provenance independent of sequence detection; other modes require a
+        confirmed external polyA position. Do not change global model flags.
         """
-        if (getattr(getattr(self.args, "polya_trimmed", None), "name", None) == "tag"
-                and getattr(self.args, "polya_trimmed_tag", None) == "pt"):
-            if model.strand not in ("+", "-"):
-                return PolyAInfo(-1, -1, -1, -1), False
-            strand_code = 1 if model.strand == "+" else 2
-            endpoint = model.get_end() if model.strand == "+" else model.get_start()
-            seen = set()
-            for read in self.store.transcript_read_ids.get(model.transcript_id, ()):
-                terminal = read.additional_info.get("pt_terminal")
-                if (not terminal or terminal[0] != strand_code
-                        or abs(terminal[1] - endpoint) > self.args.apa_delta):
-                    continue
-                seen.add((read.read_id, tuple(read.read_group_ids)))
-                if len(seen) >= self.args.min_novel_count:
-                    if model.strand == "+":
-                        return PolyAInfo(endpoint + 1, -1, -1, -1), True
-                    return PolyAInfo(-1, endpoint - 1, -1, -1), True
+        pt_mode = (getattr(getattr(self.args, "polya_trimmed", None), "name", None) == "tag"
+                   and getattr(self.args, "polya_trimmed_tag", None) == "pt")
+        if model.strand not in ("+", "-"):
             return PolyAInfo(-1, -1, -1, -1), False
-
-        # Preserve the upstream behavior for all other polyA input modes.
-        if model.intron_path and model.intron_path[0][0] == TerminalVertex.polyt:
-            return PolyAInfo(-1, model.intron_path[0][1], -1, -1), False
-        if model.intron_path and model.intron_path[-1][0] == TerminalVertex.polya:
-            return PolyAInfo(model.intron_path[-1][1], -1, -1, -1), False
+        strand_code = 1 if model.strand == "+" else 2
+        endpoint = model.get_end() if model.strand == "+" else model.get_start()
+        seen = set()
+        for read in self.store.transcript_read_ids.get(model.transcript_id, ()):
+            if pt_mode:
+                terminal = read.additional_info.get("pt_terminal")
+            else:
+                info = getattr(read, "polya_info", None)
+                if (not getattr(read, "polyA_found", False) or info is None
+                        or effective_read_strand(read, self.args) != model.strand):
+                    continue
+                pos = info.external_polya_pos if model.strand == "+" else info.external_polyt_pos
+                if pos == -1:
+                    continue
+                # PolyAInfo positions flank the aligned terminal base.
+                terminal = (strand_code, pos - 1 if model.strand == "+" else pos + 1)
+            if (not terminal or terminal[0] != strand_code
+                    or abs(terminal[1] - endpoint) > self.args.apa_delta
+                    or not read_matches_strand(read, model.strand, self.args)):
+                continue
+            seen.add((read.read_id, tuple(read.read_group_ids)))
+            if len(seen) >= self.args.min_novel_count:
+                if model.strand == "+":
+                    return PolyAInfo(endpoint + 1, -1, -1, -1), True
+                return PolyAInfo(-1, endpoint - 1, -1, -1), True
         return PolyAInfo(-1, -1, -1, -1), False
 
     def detect_similar_isoforms(self, model_storage, remove_unconfirmed=False):
@@ -241,7 +247,7 @@ class ModelFilter:
 
                 if m.transcript_id not in comparison_polya:
                     comparison_polya[m.transcript_id] = self._comparison_polya_info(m)
-                polya_info, pt_confirmed = comparison_polya[m.transcript_id]
+                polya_info, terminal_supported = comparison_polya[m.transcript_id]
                 combined_profile = profile_constructor.construct_profiles(m.exon_blocks, polya_info, [])
                 assignment = assigner.assign_to_isoform(m.transcript_id, combined_profile)
 
@@ -250,7 +256,7 @@ class ModelFilter:
                 elif (remove_unconfirmed and
                       assignment.assignment_type in (ReadAssignmentType.unique_minor_difference,
                                                      ReadAssignmentType.inconsistent_non_intronic) and
-                      not (m.polya_confirmed or pt_confirmed or (self.use_tss_model and m.tss_confirmed))):
+                      not (m.polya_confirmed or terminal_supported or (self.use_tss_model and m.tss_confirmed))):
                     # m is a terminal/ISM sub-structure of the longer model: its intron chain is a
                     # subset and only the terminal exons differ (unique_minor_difference with an
                     # ISM/elongation event, or inconsistent_non_intronic), and its polyA/TSS

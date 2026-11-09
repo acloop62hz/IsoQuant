@@ -179,7 +179,16 @@ on the same strand (3 reads and 50 nt with `sensitive_ont`). This evidence is
 used only during similarity filtering, including its unconfirmed-truncation
 pass. It does not require sequence-derived `polyA_found`, change global model
 confirmation flags, alter intron paths, or change `--polya_requirement never`.
-Other polyA input modes retain upstream behavior.
+Other input modes use confirmed external polyA positions from the model's
+assigned reads, with the same count, strand, deduplication and window gates;
+internal-only and bare-end evidence is excluded. `tag:pt` still requires its own
+pt provenance and does not fall back to sequence evidence.
+
+Initial graph construction reads polyA/polyT terminal vertices from the full
+path when building its first comparison profile. Intron-only paths retain their
+existing representation. Both genuine tail vertices can be passed; bare read
+ends and TSS vertices do not assert polyA. Existing reference/NIC decisions,
+thresholds and global model-confirmation flags are retained.
 
 Read assignment also restores shortlisted-out models with the same strand,
 an exactly matching complete observed intron chain, and both ends within
@@ -199,7 +208,7 @@ Model strands are not flipped: incompatible support is removed before count,
 coverage and terminal-support gates, and thresholds are reapplied. Reference
 selection from aggregate FL paths can conservatively skip a model rather than
 search another same-strand reference. Known-direction reads do not support
-models with unknown strand. Model-to-model comparison profiles are unchanged.
+models with unknown strand. Model comparisons do not receive an artificial real-read direction.
 
 Final model assignment now preserves a reference gene-only fallback when the
 read otherwise has neither a gene nor a transcript. The source must identify
@@ -236,6 +245,6 @@ are not updated automatically.
 Run the focused regression tests with:
 
 ```bash
-python -m unittest isoquant_tests.test_pt_model_filter isoquant_tests.test_exact_chain_candidate_rescue isoquant_tests.test_reference_gene_fallback isoquant_tests.test_read_direction isoquant_tests.test_terminal_gene_ambiguity -v
+python -m unittest isoquant_tests.test_pt_model_filter isoquant_tests.test_exact_chain_candidate_rescue isoquant_tests.test_reference_gene_fallback isoquant_tests.test_read_direction isoquant_tests.test_terminal_gene_ambiguity isoquant_tests.test_path_polya_evidence -v
 ```
 

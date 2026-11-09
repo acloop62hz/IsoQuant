@@ -105,12 +105,12 @@ class GraphBasedConstructor:
 
             reference_isoform = None
             # check if new transcript matches a reference one
-            if intron_path[0][0] == TerminalVertex.polyt:
-                polya_info = PolyAInfo(-1, intron_path[0][1], -1, -1)
-            elif intron_path[-1][0] == TerminalVertex.polya:
-                polya_info = PolyAInfo(intron_path[-1][1], -1, -1, -1)
-            else:
-                polya_info = PolyAInfo(-1, -1, -1, -1)
+            # Terminal evidence belongs to the full path, not its intron slice.
+            # Bare read/TSS vertices do not assert a polyA tail.
+            polya_info = PolyAInfo(
+                path[-1][1] if path[-1][0] == TerminalVertex.polya else -1,
+                path[0][1] if path[0][0] == TerminalVertex.polyt else -1,
+                -1, -1)
             combined_profile = self.profile_constructor.construct_profiles(novel_exons, polya_info, [])
             assignment = self.assigner.assign_to_isoform(new_transcript_id, combined_profile)
             # check that no serious contradiction occurs
