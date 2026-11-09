@@ -86,9 +86,10 @@ class TestMatchProfileAndFindMatchingIsoforms:
         with pytest.raises(AssertionError):
             self.check(read_gene_profile, isoform_profiles, hint, expected)
 
-    def check(self, read_gene_profile, isoform_profiles, hint, expected):
+    def check(self, read_gene_profile, isoform_profiles, hint, expected, expected_matching=None):
         assert self.assigner.match_profile(read_gene_profile, isoform_profiles, hint) == expected
-        expected = sorted([x[0] for x in expected if x[1] == 0])
+        # Coarse absence compatibility need not imply exact profile equality.
+        expected = sorted([x[0] for x in expected if x[1] == 0]) if expected_matching is None else expected_matching
         assert self.assigner.find_matching_isoforms(MappedReadProfile(read_gene_profile, None, None, None),
                                                     isoform_profiles, hint) == expected
 
@@ -105,18 +106,18 @@ class TestMatchProfileAndFindMatchingIsoforms:
                                None, [IsoformDiff("id1", 0), IsoformDiff("id2", 2)]),
                               ([0, 1, 1, -1, 0], dict(id1=[-1, 1, 1,  1, -2], id2=[-2, 1, 1, -1, -2],
                                                       id3=[1, -1, 1, -2, -2]),
-                               None, [IsoformDiff("id2", 0), IsoformDiff("id1", 1), IsoformDiff("id3", 2)])])
+                               None, [IsoformDiff("id2", 0), IsoformDiff("id1", 1), IsoformDiff("id3", 1)])])
     def test_some_equals(self, read_gene_profile, isoform_profiles, hint, expected):
         self.check(read_gene_profile, isoform_profiles, hint, expected)
 
     @pytest.mark.parametrize("read_gene_profile, isoform_profiles, hint, expected",
                              [([-1, 1, -1, 0], dict(id1=[-2, 1, -1, -1], id2=[1, 1, 1, 1]),
-                               None, [IsoformDiff("id1", 1), IsoformDiff("id2", 2)]),
+                               None, [IsoformDiff("id1", 0), IsoformDiff("id2", 2)]),
                               ([-1, 1, 1, -1, 0], dict(id1=[-1, 1, 1, 1, 1], id2=[1, 1, -1, -1, -1],
                                                        id3=[-2, -1, -1, 1, -2]),
-                               None, [IsoformDiff("id1", 1), IsoformDiff("id2", 2), IsoformDiff("id3", 4)])])
+                               None, [IsoformDiff("id1", 1), IsoformDiff("id2", 2), IsoformDiff("id3", 3)])])
     def test_no_equals(self, read_gene_profile, isoform_profiles, hint, expected):
-        self.check(read_gene_profile, isoform_profiles, hint, expected)
+        self.check(read_gene_profile, isoform_profiles, hint, expected, expected_matching=[])
 
     @pytest.mark.parametrize("read_gene_profile, isoform_profiles, hint, expected",
                              [([-1, 1, 1, 0], dict(id1=[-1, 1, 1, -1], id2=[1, 1, 1, -1], id3=[-1, -1, -1, 1]),

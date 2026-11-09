@@ -206,14 +206,14 @@ Fuzzy splice correction uses a cached same-strand reference-intron pool when
 the read has trusted direction. Unknown direction retains the original pool;
 explicit conflict leaves the read uncorrected. Distance/error gates are unchanged.
 
-Read assignment also restores shortlisted-out models with the same strand,
-an exactly matching complete observed intron chain, and both ends within
-`apa_delta`. Direction comes from the external-source strand or configured
-strandedness relative to BAM. This applies to initial BAM assignment and final
-leftover-read reassignment; model-comparison profiles are excluded. The existing
-fine verifier decides the result, including ambiguity and polyA consistency.
-No tail evidence is required to admit these candidates. Improved reference
-assignments can indirectly change discovery results on rerun.
+Coarse candidate ranking treats absent and outside-profile states as lacking
+the feature, rather than as a splice difference. Actual present/absent conflicts
+remain scored. This replaces the exact-chain candidate rescue, its separate
+index and its extra two-end window. Overlap/direction filters, coverage scores,
+terminal penalties, the best-plus-three shortlist and fine verification remain
+unchanged. The shared profile-distance utility is unchanged. Initial reference
+and final model assignments, including model-comparison profiles, use the same
+corrected shortlist logic. Recollecting reads can change discovery on rerun.
 
 Trustworthy protocol-adjusted BAM/external direction now filters all real-read
 transcript candidates before ranking, plus gene-overlap fallbacks, construction
@@ -271,7 +271,7 @@ Run the focused regression tests with:
 
 ```bash
 python -m unittest \
-    isoquant_tests.test_pt_model_filter isoquant_tests.test_exact_chain_candidate_rescue \
+    isoquant_tests.test_pt_model_filter isoquant_tests.test_candidate_prefilter \
     isoquant_tests.test_reference_gene_fallback isoquant_tests.test_read_direction \
     isoquant_tests.test_terminal_gene_ambiguity isoquant_tests.test_path_polya_evidence \
     isoquant_tests.test_model_filter_eligibility isoquant_tests.test_known_chain_index \

@@ -13,13 +13,11 @@ from functools import partial
 from isoquant_lib.common import (
     contains,
     contains_approx,
-    difference_in_present_features,
     equal_profiles_in_range,
     equal_ranges,
     extra_exon_percentage,
     has_overlapping_features,
     jaccard_similarity,
-    junctions_from_blocks,
     overlap_intervals,
     overlaps,
     read_coverage_fraction,
@@ -124,7 +122,10 @@ class LongReadAssigner:
 
     @staticmethod
     def match_profile(read_gene_profile, isoform_profiles, hint=None, diff_limit=-1, profile_range=None):
-        """ match read profiles to a known isoform junction profile
+        """Rank coarse junction profiles by actual present/absent conflicts.
+
+        Absent (-1) and outside (-2) both lack the feature. Their different
+        negative states are not splice differences; zero remains unobserved.
 
         Parameters
         ----------
@@ -139,10 +140,21 @@ class LongReadAssigner:
             list of tuples (id and difference)
         """
         isoforms = []
+        if profile_range is None:
+            profile_range = (0, len(read_gene_profile))
         isoform_set = hint if hint is not None else isoform_profiles.keys()
         for isoform_id in isoform_set:
             isoform_profile = isoform_profiles[isoform_id]
-            diff = difference_in_present_features(isoform_profile, read_gene_profile, diff_limit, profile_range)
+            assert len(isoform_profile) == len(read_gene_profile)
+            diff = 0
+            for i in range(*profile_range):
+                model_state, read_state = isoform_profile[i], read_gene_profile[i]
+                if model_state == 0 or read_state == 0 or (model_state < 0 and read_state < 0):
+                    continue
+                if model_state != read_state:
+                    diff += 1
+                    if diff_limit != -1 and diff > diff_limit:
+                        break
             if diff_limit == -1 or diff <= diff_limit:
                 isoforms.append(IsoformDiff(isoform_id, diff))
         return sorted(isoforms, key=lambda x: x.diff)
@@ -262,32 +274,6 @@ class LongReadAssigner:
             assignment.gene_assignment_type = ReadAssignmentType.inconsistent_non_intronic
             assignment.additional_attributes["gene_assignment_reason"] = "same_gene_terminal_ambiguity"
         return assignment
-
-    def _restore_exact_chain_candidates(self, profile, candidates):
-        """Let exact, same-strand full chains reach the existing fine verifier."""
-        strand = getattr(profile, "candidate_read_strand", ".")
-        exons = profile.read_split_exon_profile.read_features
-        if strand not in ("+", "-") or len(exons) < 2:
-            return candidates
-        # Build lazily once per assigner; do not scan every model for each read.
-        if not hasattr(self, "_exact_chain_candidate_index"):
-            index = {}
-            for tid, introns in self.gene_info.all_isoforms_introns.items():
-                if introns:
-                    key = (self.gene_info.isoform_strands[tid], tuple(introns))
-                    index.setdefault(key, []).append(tid)
-            self._exact_chain_candidate_index = index
-        key = (strand, tuple(junctions_from_blocks(exons)))
-        present = set(candidates or ())
-        restored = []
-        for tid in self._exact_chain_candidate_index.get(key, ()):
-            start, end = self.gene_info.transcript_region(tid)
-            if (tid not in present and abs(exons[0][0] - start) <= self.params.apa_delta
-                    and abs(exons[-1][1] - end) <= self.params.apa_delta):
-                restored.append(tid)
-        if not restored:
-            return candidates
-        return list(candidates or ()) + sorted(restored)
 
     # detect exon elongation subtyp
     def categorize_exon_elongation_subtype(self, read_split_exon_profile, isoform_id):
@@ -724,7 +710,6 @@ class LongReadAssigner:
 
         # select most similar isoforms based on multiple criteria
         best_candidates = self.select_similar_isoforms(combined_read_profile)
-        best_candidates = self._restore_exact_chain_candidates(combined_read_profile, best_candidates)
         if not best_candidates:
             return self.assign_to_overlapping_genes(read_id, read_region, MatchClassification.genic,
                                                     getattr(combined_read_profile, "candidate_read_strand", "."))
