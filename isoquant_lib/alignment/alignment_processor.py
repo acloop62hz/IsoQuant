@@ -447,6 +447,7 @@ class AlignmentCollector:
             read_assignment.polyA_found = has_any_polya(alignment_info.polya_info)
 
             AlignmentCollector.import_bam_tags(alignment, read_assignment, self.params.bam_tags)
+            self._record_pt_terminal(alignment, read_assignment, external_polya, mapped_strand)
             yield read_assignment
 
     def process_genic(self, alignment_storage, gene_info, region, skip_read_fraction=1):
@@ -519,6 +520,7 @@ class AlignmentCollector:
             read_assignment.strand = self.get_assignment_strand(read_assignment)
             AlignmentCollector.check_antisense(read_assignment)
             AlignmentCollector.import_bam_tags(alignment, read_assignment, self.params.bam_tags)
+            self._record_pt_terminal(alignment, read_assignment, external_polya, mapped_strand)
             read_assignment.chr_id = gene_info.chr_id
             read_assignment.multimapper = alignment.is_secondary
             read_assignment.mapping_quality = alignment.mapping_quality
@@ -610,6 +612,20 @@ class AlignmentCollector:
         if self.params.polya_trimmed.uses_read_table():
             return self.polya_read_dict.get(read_id, UNKNOWN)
         return UNKNOWN
+
+    def _record_pt_terminal(self, alignment, read_assignment, external_polya, mapped_strand):
+        """Preserve tag provenance for model comparison, independently of sequence scans.
+
+        The existing serialized dictionary keeps the cache format unchanged.
+        Coordinates are the original BAM boundaries, in one-based inclusive form.
+        """
+        if self.params.polya_trimmed != PolyATrimmed.tag or self.polya_tag != "pt":
+            return
+        strand = resolve_external_strand(external_polya, mapped_strand)
+        if strand == "+":
+            read_assignment.additional_info["pt_terminal"] = (1, alignment.reference_end)
+        elif strand == "-":
+            read_assignment.additional_info["pt_terminal"] = (2, alignment.reference_start + 1)
 
     def add_polya_info(self, alignment_info: AlignmentInfo, external_polya: ExternalPolyA,
                        mapped_strand: str) -> None:

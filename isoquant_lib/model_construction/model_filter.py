@@ -191,8 +191,41 @@ class ModelFilter:
                 return False
         return True
 
+    def _comparison_polya_info(self, model):
+        """Supply supported pt termini only to the model-similarity comparison.
+
+        Do not change intron paths, global confirmation flags or construction
+        requirements. Recompute after end refinement, once per model per pass.
+        """
+        if (getattr(getattr(self.args, "polya_trimmed", None), "name", None) == "tag"
+                and getattr(self.args, "polya_trimmed_tag", None) == "pt"):
+            if model.strand not in ("+", "-"):
+                return PolyAInfo(-1, -1, -1, -1), False
+            strand_code = 1 if model.strand == "+" else 2
+            endpoint = model.get_end() if model.strand == "+" else model.get_start()
+            seen = set()
+            for read in self.store.transcript_read_ids.get(model.transcript_id, ()):
+                terminal = read.additional_info.get("pt_terminal")
+                if (not terminal or terminal[0] != strand_code
+                        or abs(terminal[1] - endpoint) > self.args.apa_delta):
+                    continue
+                seen.add((read.read_id, tuple(read.read_group_ids)))
+                if len(seen) >= self.args.min_novel_count:
+                    if model.strand == "+":
+                        return PolyAInfo(endpoint + 1, -1, -1, -1), True
+                    return PolyAInfo(-1, endpoint - 1, -1, -1), True
+            return PolyAInfo(-1, -1, -1, -1), False
+
+        # Preserve the upstream behavior for all other polyA input modes.
+        if model.intron_path and model.intron_path[0][0] == TerminalVertex.polyt:
+            return PolyAInfo(-1, model.intron_path[0][1], -1, -1), False
+        if model.intron_path and model.intron_path[-1][0] == TerminalVertex.polya:
+            return PolyAInfo(model.intron_path[-1][1], -1, -1, -1), False
+        return PolyAInfo(-1, -1, -1, -1), False
+
     def detect_similar_isoforms(self, model_storage, remove_unconfirmed=False):
         to_substitute = {}
+        comparison_polya = {}
         for model in model_storage:
             if len(model.exon_blocks) <= 2 or model.transcript_id in to_substitute:
                 continue
@@ -206,12 +239,9 @@ class ModelFilter:
                         len(m.exon_blocks) > len(model.exon_blocks):
                     continue
 
-                if m.intron_path[0][0] == TerminalVertex.polyt:
-                    polya_info = PolyAInfo(-1, m.intron_path[0][1], -1, -1)
-                elif m.intron_path[-1][0] == TerminalVertex.polya:
-                    polya_info = PolyAInfo(m.intron_path[-1][1], -1, -1, -1)
-                else:
-                    polya_info = PolyAInfo(-1, -1, -1, -1)
+                if m.transcript_id not in comparison_polya:
+                    comparison_polya[m.transcript_id] = self._comparison_polya_info(m)
+                polya_info, pt_confirmed = comparison_polya[m.transcript_id]
                 combined_profile = profile_constructor.construct_profiles(m.exon_blocks, polya_info, [])
                 assignment = assigner.assign_to_isoform(m.transcript_id, combined_profile)
 
@@ -220,7 +250,7 @@ class ModelFilter:
                 elif (remove_unconfirmed and
                       assignment.assignment_type in (ReadAssignmentType.unique_minor_difference,
                                                      ReadAssignmentType.inconsistent_non_intronic) and
-                      not (m.polya_confirmed or (self.use_tss_model and m.tss_confirmed))):
+                      not (m.polya_confirmed or pt_confirmed or (self.use_tss_model and m.tss_confirmed))):
                     # m is a terminal/ISM sub-structure of the longer model: its intron chain is a
                     # subset and only the terminal exons differ (unique_minor_difference with an
                     # ISM/elongation event, or inconsistent_non_intronic), and its polyA/TSS

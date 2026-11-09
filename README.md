@@ -166,3 +166,29 @@ Installation typically takes no more than a few minutes.
 
 * For single-cell and spatial transcriptomic data, check out `--mode` option.
 
+## Local direct RNA patch (IsoQuant 4.1.0)
+
+With `--polya_trimmed tag:pt`, model-similarity filtering now uses valid `pt`
+evidence from a model's assigned reads instead of looking for terminal vertices
+in its intron-only path. The original BAM end and externally resolved strand
+are saved in the existing assignment metadata. As upstream, integer `pt >= 0`
+is valid; missing, negative, Boolean or noninteger values are not evidence.
+
+A model end needs at least `min_novel_count` distinct reads within `apa_delta`
+on the same strand (3 reads and 50 nt with `sensitive_ont`). This evidence is
+used only during similarity filtering, including its unconfirmed-truncation
+pass. It does not require sequence-derived `polyA_found`, change global model
+confirmation flags, alter intron paths, or change `--polya_requirement never`.
+Other polyA input modes retain upstream behavior.
+
+Old assignment caches remain readable but lack this provenance. Recollect
+assignments from BAM in a fresh output directory to obtain the fix; resuming
+old assignments cannot reconstruct `pt` evidence. Previously generated results
+are not updated automatically.
+
+Run the focused regression tests with:
+
+```bash
+python -m unittest isoquant_tests.test_pt_model_filter -v
+```
+
