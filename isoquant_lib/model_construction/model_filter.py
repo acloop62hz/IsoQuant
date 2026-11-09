@@ -78,12 +78,12 @@ class ModelFilter:
         self.store.transcript_model_storage = filtered_storage
 
     def filter_transcripts(self):
-        pre_filtered_storage = []
-        to_substitute = self.detect_similar_isoforms(self.store.transcript_model_storage)
-
+        # Qualify models before allowing any of them to replace another model.
+        # A replacement that will fail count/MAPQ gates must not delete support.
+        eligible_storage = []
         for model in self.store.transcript_model_storage:
             if model.transcript_type == TranscriptModelType.known:
-                pre_filtered_storage.append(model)
+                eligible_storage.append(model)
                 continue
             # check coverage
             component_coverage = self.ctx.intron_graph.get_max_component_coverage(model.intron_path)
@@ -95,11 +95,6 @@ class ModelFilter:
             else:
                 novel_isoform_cutoff = max(self.args.min_novel_count,
                                            self.args.min_novel_count_rel * component_coverage)
-
-            if model.transcript_id in to_substitute:
-                # logger.debug("Novel model %s has a similar isoform %s" % (model.transcript_id, to_substitute[model.transcript_id]))
-                self.store.delete_from_storage(model.transcript_id)
-                continue
 
             if self.store.internal_counter[model.transcript_id] < novel_isoform_cutoff:
                 # logger.debug("Novel model %s has coverage %d < %.2f, component cov = %d" % (model.transcript_id,
@@ -115,6 +110,18 @@ class ModelFilter:
                     # logger.debug("Novel model %s has poor quality" % model.transcript_id)
                     self.store.delete_from_storage(model.transcript_id)
                     continue
+
+            eligible_storage.append(model)
+
+        pre_filtered_storage = []
+        to_substitute = self.detect_similar_isoforms(eligible_storage)
+        for model in eligible_storage:
+            if model.transcript_type == TranscriptModelType.known:
+                pre_filtered_storage.append(model)
+                continue
+            if model.transcript_id in to_substitute:
+                self.store.delete_from_storage(model.transcript_id)
+                continue
 
             self.end_processor.correct_novel_transcript_ends(model, self.store.transcript_read_ids[model.transcript_id])
             self.end_processor._mark_terminal_confirmation(model)

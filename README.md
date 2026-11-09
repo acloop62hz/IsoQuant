@@ -190,6 +190,12 @@ existing representation. Both genuine tail vertices can be passed; bare read
 ends and TSS vertices do not assert polyA. Existing reference/NIC decisions,
 thresholds and global model-confirmation flags are retained.
 
+Model filtering now applies its existing absolute/relative support and simple
+alignment-MAPQ gates before similarity comparison. Only eligible models can
+replace another model; an under-supported target can no longer delete a
+supported source and then be removed itself. Known-model exemptions, qualified
+model ordering, both similarity passes and end refinement are retained.
+
 Read assignment also restores shortlisted-out models with the same strand,
 an exactly matching complete observed intron chain, and both ends within
 `apa_delta`. Direction comes from the external-source strand or configured
@@ -245,6 +251,6 @@ are not updated automatically.
 Run the focused regression tests with:
 
 ```bash
-python -m unittest isoquant_tests.test_pt_model_filter isoquant_tests.test_exact_chain_candidate_rescue isoquant_tests.test_reference_gene_fallback isoquant_tests.test_read_direction isoquant_tests.test_terminal_gene_ambiguity isoquant_tests.test_path_polya_evidence -v
+python -m unittest isoquant_tests.test_pt_model_filter isoquant_tests.test_exact_chain_candidate_rescue isoquant_tests.test_reference_gene_fallback isoquant_tests.test_read_direction isoquant_tests.test_terminal_gene_ambiguity isoquant_tests.test_path_polya_evidence isoquant_tests.test_model_filter_eligibility -v
 ```
 
