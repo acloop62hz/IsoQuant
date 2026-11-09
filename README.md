@@ -190,6 +190,20 @@ fine verifier decides the result, including ambiguity and polyA consistency.
 No tail evidence is required to admit these candidates. Improved reference
 assignments can indirectly change discovery results on rerun.
 
+Final model assignment now preserves a reference gene-only fallback when the
+read otherwise has neither a gene nor a transcript. The source must identify
+one gene with a unique/minor/non-intronic gene classification, agree with the
+known protocol/BAM or externally supported direction, and overlap a reference
+exon of that gene. Conflicting directions and intronic-only overlap are rejected.
+The merged reference-exon index is built once per block. Existing final gene or
+transcript assignments are preserved. Output records carry
+`gene_assignment_source=reference_gene_only`; transcript status remains
+unassigned/discarded. Gene counting and confirmation rules remain unchanged;
+non-intronic-only evidence cannot independently confirm an otherwise unconfirmed
+gene. This final-stage fallback does not construct or modify transcript models.
+Gene rows without a retained transcript model can now appear in discovered gene
+counts, so those counts need not equal summed discovered transcript counts.
+
 Old assignment caches remain readable but lack this provenance. Recollect
 assignments from BAM in a fresh output directory to obtain the fix; resuming
 old assignments cannot reconstruct `pt` evidence. Previously generated results
@@ -198,6 +212,6 @@ are not updated automatically.
 Run the focused regression tests with:
 
 ```bash
-python -m unittest isoquant_tests.test_pt_model_filter isoquant_tests.test_exact_chain_candidate_rescue -v
+python -m unittest isoquant_tests.test_pt_model_filter isoquant_tests.test_exact_chain_candidate_rescue isoquant_tests.test_reference_gene_fallback -v
 ```
 

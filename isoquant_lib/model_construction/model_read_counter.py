@@ -12,6 +12,7 @@
 
 import copy
 import logging
+from bisect import bisect_right
 from typing import List
 
 from ..gene_info import GeneInfo, TranscriptModelType
@@ -40,6 +41,69 @@ class ModelReadCounter:
         self.transcript_counter = transcript_counter
         self.gene_counter = gene_counter
         self.model_read_assignments: List[ReadAssignment] = []
+        self._reference_gene_exons = None
+
+    def _reference_gene_only_fallback(self, source, assignment):
+        """Preserve independent reference gene evidence without inventing a model."""
+        if any(m.assigned_gene or m.assigned_transcript for m in assignment.isoform_matches):
+            return
+        eligible = (ReadAssignmentType.unique, ReadAssignmentType.unique_minor_difference,
+                    ReadAssignmentType.inconsistent_non_intronic)
+        if source.gene_assignment_type not in eligible or not source.isoform_matches:
+            return
+        genes = {m.assigned_gene for m in source.isoform_matches}
+        if len(genes) != 1 or None in genes:
+            return
+        gene = next(iter(genes))
+        mapped = source.mapped_strand
+        if mapped not in ("+", "-") or source.chr_id != self.gene_info.chr_id:
+            return
+        mode = getattr(self.args, "stranded", None)
+        bam_direction = (mapped if mode == "forward" else
+                         ("-" if mapped == "+" else "+") if mode == "reverse" else None)
+        terminal = source.additional_info.get("pt_terminal")
+        external_direction = ({1: "+", 2: "-"}.get(terminal[0]) if terminal else None)
+        if bam_direction and external_direction and bam_direction != external_direction:
+            return
+        direction = external_direction or bam_direction
+        if direction not in ("+", "-") or self.gene_info.gene_strands.get(gene) != direction:
+            return
+
+        # Build once per block, independent of which transcript models survived.
+        # Merged intervals support logarithmic overlap checks for each read exon.
+        if self._reference_gene_exons is None:
+            grouped = {}
+            for tid, gid in self.gene_info.gene_id_map.items():
+                grouped.setdefault(gid, []).extend(self.gene_info.all_isoforms_exons.get(tid, ()))
+            self._reference_gene_exons = {}
+            for gid, intervals in grouped.items():
+                merged = []
+                for start, end in sorted(set(map(tuple, intervals))):
+                    if merged and start <= merged[-1][1] + 1:
+                        merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
+                    else:
+                        merged.append((start, end))
+                self._reference_gene_exons[gid] = ([x[0] for x in merged], merged)
+        starts, intervals = self._reference_gene_exons.get(gene, ((), ()))
+        exons = source.exons or source.corrected_exons
+        supported = False
+        previous_end = 0
+        for start, end in exons or ():
+            if start < 1 or start > end or start <= previous_end:
+                return
+            previous_end = end
+            pos = bisect_right(starts, end) - 1
+            if pos >= 0 and intervals[pos][1] >= start:
+                supported = True
+        if not supported:
+            return
+
+        assignment.isoform_matches = [IsoformMatch(
+            MatchClassification.genic, self.string_pools, assigned_gene=gene)]
+        assignment.gene_assignment_type = source.gene_assignment_type
+        assignment.additional_attributes = dict(assignment.additional_attributes)
+        assignment.additional_attributes["gene_assignment_source"] = "reference_gene_only"
+        assignment.additional_attributes["reference_gene_assignment"] = source.gene_assignment_type.name
 
     def _single_model_assigner(self, model, cache):
         # Cache one (assigner, profile_constructor) per model over a single-isoform
@@ -86,8 +150,8 @@ class ModelReadCounter:
     def _build_discarded_assignment(self, read_id, gene, surviving_genes):
         # A read whose reference-unique known isoform was dropped: no transcript.
         # It still belongs to its gene, so it counts toward that gene when the gene
-        # has a surviving model (gene_assignment_type=unique makes the gene counter
-        # count it); otherwise it is not assigned anywhere.
+        # has a surviving model. Otherwise the conservative reference-gene-only
+        # fallback below can retain independently validated gene evidence.
         if gene is not None and gene in surviving_genes:
             match = IsoformMatch(MatchClassification.genic, self.string_pools, assigned_gene=gene)
             ra = ReadAssignment(read_id, ReadAssignmentType.discarded, self.string_pools, match=[match])
@@ -107,8 +171,7 @@ class ModelReadCounter:
            graph tolerance, forced onto it as unique/umd (it must count toward the
            model it contributed to).
         2. reference-unique member on a *kept* known isoform -> reuse source match.
-        3. discarded (reference-unique to a *dropped* known isoform) -> no transcript;
-           counts toward the gene only if that gene still has a surviving model.
+        3. discarded (reference-unique to a *dropped* known isoform) -> no transcript.
         4. leftover -> assign vs the full model set (quick_mode=False): honest
            unique/umd/ambiguous/inconsistent, kept regardless of consistency.
         """
@@ -165,6 +228,7 @@ class ModelReadCounter:
 
             ra.gene_info = model_gene_info
             self._copy_read_aux(ra, source)
+            self._reference_gene_only_fallback(source, ra)
             self.model_read_assignments.append(ra)
             self.transcript_counter.add_read_info(ra)
             self.gene_counter.add_read_info(ra)
