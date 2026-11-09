@@ -251,6 +251,8 @@ class ModelFilter:
                         m.transcript_id in to_substitute or len(m.exon_blocks) == 1 or not m.intron_path or \
                         len(m.exon_blocks) > len(model.exon_blocks):
                     continue
+                if model.strand in ("+", "-") and m.strand in ("+", "-") and model.strand != m.strand:
+                    continue
 
                 if m.transcript_id not in comparison_polya:
                     comparison_polya[m.transcript_id] = self._comparison_polya_info(m)

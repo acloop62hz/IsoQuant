@@ -206,6 +206,13 @@ class TranscriptEndProcessor:
         # Monoexon -> empty tuple.
         return tuple(junctions_from_blocks(model.exon_blocks))
 
+    @staticmethod
+    def _compatible_terminal_pairs(pairs, strand, intron_chain):
+        # Unknown model strands retain legacy coordinate-only comparison.
+        strands = (strand, ".") if strand in ("+", "-") else ("+", "-", ".")
+        for compatible_strand in strands:
+            yield from pairs.get((compatible_strand, intron_chain), ())
+
     def _add_known_alternative_end_models(self) -> None:
         # Part 2: for each known (reference) model, peak-call its own assigned
         # reads and emit a NIC for every confident alternative polyA/TSS end,
@@ -217,11 +224,12 @@ class TranscriptEndProcessor:
         # lands on another annotated isoform of the same chain is that known, not
         # a novel end, so it must be suppressed even if that reference was not
         # emitted as a model in this locus.
-        for ref_exons in self.gene_info.all_isoforms_exons.values():
+        for ref_id, ref_exons in self.gene_info.all_isoforms_exons.items():
             ck = tuple(junctions_from_blocks(ref_exons))
-            existing_pairs[ck].append((ref_exons[0][0], ref_exons[-1][1]))
+            strand = getattr(self.gene_info, "isoform_strands", {}).get(ref_id, ".")
+            existing_pairs[(strand, ck)].append((ref_exons[0][0], ref_exons[-1][1]))
         for m in self.store.transcript_model_storage:
-            existing_pairs[self._intron_chain_key(m)].append(
+            existing_pairs[(m.strand, self._intron_chain_key(m))].append(
                 (m.exon_blocks[0][0], m.exon_blocks[-1][1]))
 
         new_models = []
@@ -238,9 +246,9 @@ class TranscriptEndProcessor:
                 ck = self._intron_chain_key(nic)
                 ns, ne = nic.exon_blocks[0][0], nic.exon_blocks[-1][1]
                 if any(abs(ns - s) <= self.args.apa_delta and abs(ne - e) <= self.args.apa_delta
-                       for (s, e) in existing_pairs[ck]):
+                       for (s, e) in self._compatible_terminal_pairs(existing_pairs, nic.strand, ck)):
                     continue
-                existing_pairs[ck].append((ns, ne))
+                existing_pairs[(nic.strand, ck)].append((ns, ne))
                 new_models.append(nic)
                 # Hand the alternative-end peak's reads to the NIC so it is not a
                 # zero-read phantom; keep at least one read on the source.
@@ -259,9 +267,10 @@ class TranscriptEndProcessor:
         # transcript, not a novel end; and collapse non-known models that
         # duplicate an already-kept one.
         ref_pairs = defaultdict(list)
-        for ref_exons in self.gene_info.all_isoforms_exons.values():
+        for ref_id, ref_exons in self.gene_info.all_isoforms_exons.items():
             ck = tuple(junctions_from_blocks(ref_exons))
-            ref_pairs[ck].append((ref_exons[0][0], ref_exons[-1][1]))
+            strand = getattr(self.gene_info, "isoform_strands", {}).get(ref_id, ".")
+            ref_pairs[(strand, ck)].append((ref_exons[0][0], ref_exons[-1][1]))
 
         d = self.args.apa_delta
         kept = []
@@ -273,8 +282,10 @@ class TranscriptEndProcessor:
                 continue
             ck = self._intron_chain_key(m)
             s, e = m.exon_blocks[0][0], m.exon_blocks[-1][1]
-            if any(abs(s - rs) <= d and abs(e - re) <= d for rs, re in ref_pairs[ck]) or \
-                    any(abs(s - ks) <= d and abs(e - ke) <= d for ks, ke in kept_pairs[ck]):
+            if any(abs(s - rs) <= d and abs(e - re) <= d for rs, re in
+                   self._compatible_terminal_pairs(ref_pairs, m.strand, ck)) or \
+                    any(abs(s - ks) <= d and abs(e - ke) <= d for ks, ke in
+                        self._compatible_terminal_pairs(kept_pairs, m.strand, ck)):
                 dropped += 1
                 # free the model's reads for reassignment (graph-level NICs are
                 # already counted; post-pass NICs are not yet in the counters)
@@ -282,7 +293,7 @@ class TranscriptEndProcessor:
                     self.store.delete_from_storage(m.transcript_id)
                 continue
             kept.append(m)
-            kept_pairs[ck].append((s, e))
+            kept_pairs[(m.strand, ck)].append((s, e))
         if dropped:
             logger.debug("Dropped %d duplicate / reference-matching alt-end models" % dropped)
         self.store.transcript_model_storage = kept

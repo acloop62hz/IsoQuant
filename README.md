@@ -196,6 +196,16 @@ replace another model; an under-supported target can no longer delete a
 supported source and then be removed itself. Known-model exemptions, qualified
 model ordering, both similarity passes and end refinement are retained.
 
+All reference transcript IDs whose intron chains thread into the graph now
+remain eligible for assignment-based construction, including IDs sharing a
+chain with different ends. The existing representative per chain and support
+thresholds are unchanged. Model similarity and alternative-end deduplication
+exclude explicitly opposite strands; unknown strands retain legacy behavior.
+
+Fuzzy splice correction uses a cached same-strand reference-intron pool when
+the read has trusted direction. Unknown direction retains the original pool;
+explicit conflict leaves the read uncorrected. Distance/error gates are unchanged.
+
 Read assignment also restores shortlisted-out models with the same strand,
 an exactly matching complete observed intron chain, and both ends within
 `apa_delta`. Direction comes from the external-source strand or configured
@@ -243,6 +253,15 @@ composes with reference gene-only preservation when no model survives, without
 creating or confirming a transcript model. Recollect BAM assignments to apply
 this classification change to reference counts; old caches are not reclassified.
 
+In final-model output, inherited reasons use `reference_gene_assignment_reason`.
+Only reasons established by the final matcher use `gene_assignment_reason`.
+Gene-only fallback provenance, weights and confirmation gates are unchanged.
+
+GTF gene bounds include models from every emitted block, retaining reference
+bounds. Transcript counts use distinct emitted IDs. When later blocks change
+gene metadata, explicit printer close performs one streaming atomic rewrite;
+transcript/exon records and headers are preserved.
+
 Old assignment caches remain readable but lack this provenance. Recollect
 assignments from BAM in a fresh output directory to obtain the fix; resuming
 old assignments cannot reconstruct `pt` evidence. Previously generated results
@@ -251,6 +270,12 @@ are not updated automatically.
 Run the focused regression tests with:
 
 ```bash
-python -m unittest isoquant_tests.test_pt_model_filter isoquant_tests.test_exact_chain_candidate_rescue isoquant_tests.test_reference_gene_fallback isoquant_tests.test_read_direction isoquant_tests.test_terminal_gene_ambiguity isoquant_tests.test_path_polya_evidence isoquant_tests.test_model_filter_eligibility -v
+python -m unittest \
+    isoquant_tests.test_pt_model_filter isoquant_tests.test_exact_chain_candidate_rescue \
+    isoquant_tests.test_reference_gene_fallback isoquant_tests.test_read_direction \
+    isoquant_tests.test_terminal_gene_ambiguity isoquant_tests.test_path_polya_evidence \
+    isoquant_tests.test_model_filter_eligibility isoquant_tests.test_known_chain_index \
+    isoquant_tests.test_stranded_exon_correction isoquant_tests.test_model_strand_identity \
+    isoquant_tests.test_gene_output_metadata isoquant_tests.test_reference_reason_provenance -v
 ```
 

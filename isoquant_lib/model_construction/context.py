@@ -225,14 +225,15 @@ class ModelConstructionContext:
         return None
 
     def get_known_spliced_isoforms(self, gene_info, s="known"):
-        known_isoforms = {}
+        return {path: isoform_id for isoform_id, path in self._known_isoform_paths(gene_info)}
+
+    def _known_isoform_paths(self, gene_info):
         for isoform_id in gene_info.all_isoforms_introns:
             isoform_introns = gene_info.all_isoforms_introns[isoform_id]
             intron_path = self.path_processor.thread_introns(isoform_introns)
             if not intron_path:
                 continue
-            known_isoforms[tuple(intron_path)] = isoform_id
-        return known_isoforms
+            yield isoform_id, tuple(intron_path)
 
     def build_graph(self, read_assignment_storage):
         read_assignment_storage = [a for a in read_assignment_storage
@@ -243,7 +244,9 @@ class ModelConstructionContext:
         self.path_processor = IntronPathProcessor(self.args, self.intron_graph)
         self.path_storage = IntronPathStorage(self.args, self.path_processor)
         self.path_storage.fill(read_assignment_storage)
-        self.known_isoforms_in_graph = self.get_known_spliced_isoforms(self.gene_info)
+        # Multiple reference isoforms can share a chain but have distinct ends.
+        # Keep every graph-compatible ID independently of the chain representative.
+        self.known_isoforms_in_graph_ids = dict(self._known_isoform_paths(self.gene_info))
+        self.known_isoforms_in_graph = {
+            path: isoform_id for isoform_id, path in self.known_isoforms_in_graph_ids.items()}
         self.known_introns = set(self.gene_info.intron_profiles.features)
-        for intron_path, isoform_id in self.known_isoforms_in_graph.items():
-            self.known_isoforms_in_graph_ids[isoform_id] = intron_path

@@ -11,6 +11,7 @@ from functools import partial
 from isoquant_lib.common import equal_ranges, junctions_from_blocks, contains_well_inside
 from .isoform_assignment import ReadAssignmentType, MatchEventSubtype, SupplementaryMatchConstants
 from .long_read_profiles import OverlappingFeaturesProfileConstructor
+from .read_direction import CONFLICT
 
 logger = logging.getLogger('IsoQuant')
 
@@ -25,11 +26,26 @@ class ExonCorrector:
             OverlappingFeaturesProfileConstructor(self.gene_info.intron_profiles.features,
                                                   (self.gene_info.start, self.gene_info.end),
                                                   comparator=partial(equal_ranges, delta=self.params.delta))
+        self._stranded_intron_profiles = {}
+
+    def _intron_profile_for_direction(self, direction):
+        if direction not in ("+", "-"):
+            return self.intron_profile_constructor
+        if direction not in self._stranded_intron_profiles:
+            introns = sorted({intron
+                              for tid, chain in self.gene_info.all_isoforms_introns.items()
+                              if self.gene_info.isoform_strands.get(tid) == direction
+                              for intron in chain})
+            self._stranded_intron_profiles[direction] = OverlappingFeaturesProfileConstructor(
+                introns, (self.gene_info.start, self.gene_info.end),
+                comparator=partial(equal_ranges, delta=self.delta))
+        return self._stranded_intron_profiles[direction]
 
     def correct_assigned_read(self, alignment_info, read_assignment):
         if len(alignment_info.read_exons) == 1 or \
                 read_assignment.assignment_type == ReadAssignmentType.noninformative or \
-                not read_assignment.isoform_matches:
+                not read_assignment.isoform_matches or \
+                getattr(alignment_info.combined_profile, "candidate_read_strand", ".") == CONFLICT:
             return alignment_info.read_exons
 
         read_region, new_introns = self.correct_misalignments(alignment_info, read_assignment)
@@ -102,7 +118,11 @@ class ExonCorrector:
     def process_events(self, alignment_info, event_map, read_region, read_introns, isoform_region, isoform_introns):
         if self.params.correct_fuzzy_junctions:
             # logger.debug("*** Correcting fuzzy junctions")
-            potential_introns = self.intron_profile_constructor.match_genomic_features(read_introns)
+            # The collector has not populated ReadAssignment.mapped_strand yet.
+            # This profile already carries resolved protocol/external direction.
+            direction = getattr(alignment_info.combined_profile, "candidate_read_strand", ".")
+            constructor = self._intron_profile_for_direction(direction)
+            potential_introns = constructor.match_genomic_features(read_introns)
             # logger.debug(potential_introns)
             corrected_introns = []
             assert len(potential_introns) == len(read_introns)

@@ -7,6 +7,9 @@
 
 import logging
 import os
+import re
+import stat
+import tempfile
 from collections import defaultdict
 from collections import namedtuple
 
@@ -38,6 +41,9 @@ class GFFPrinter:
         self.model_fname = os.path.join(outf_prefix, sample_name + gtf_suffix)
         self.exon_id_storage = exon_id_storage
         self.printed_gene_ids = set()
+        self._gene_summaries = {}
+        self._printed_gene_metadata = {}
+        self._metadata_finalized = False
         self.out_gff = open(self.model_fname, "w")
         if header:
             self.out_gff.write("# " + sample_name + " IsoQuant generated GTF\n" + header)
@@ -46,10 +52,51 @@ class GFFPrinter:
         self.check_canonical = check_canonical
 
     def __del__(self):
-        self.out_gff.close()
+        # Finalization is explicit so errors propagate before a worker checkpoint.
+        handle = getattr(self, "out_gff", None)
+        if handle is not None:
+            handle.close()
 
     def close(self):
         self.out_gff.close()
+        if self._metadata_finalized:
+            return
+        changed = {gene for gene, (start, end, tids) in self._gene_summaries.items()
+                   if (start, end, len(tids)) != self._printed_gene_metadata[gene]}
+        if changed:
+            self._rewrite_gene_metadata(changed)
+        self._metadata_finalized = True
+
+    def _rewrite_gene_metadata(self, changed):
+        """Finalize cross-block gene records with one streaming, atomic rewrite."""
+        temporary_name = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                    mode="w", encoding=self.out_gff.encoding,
+                    dir=os.path.dirname(os.path.abspath(self.model_fname)),
+                    prefix=".isoquant_gene_metadata_", delete=False) as rewritten:
+                temporary_name = rewritten.name
+                with open(self.model_fname, encoding=self.out_gff.encoding) as original:
+                    for line in original:
+                        columns = line.split("\t")
+                        if len(columns) == 9 and columns[2] == "gene":
+                            match = re.search(r'\bgene_id "([^"]+)";', columns[8])
+                            if match and match.group(1) in changed:
+                                start, end, tids = self._gene_summaries[match.group(1)]
+                                columns[3], columns[4] = str(start), str(end)
+                                columns[8] = re.sub(r'\btranscripts "\d+";',
+                                                    'transcripts "%d";' % len(tids),
+                                                    columns[8], count=1)
+                                line = "\t".join(columns)
+                        rewritten.write(line)
+                rewritten.flush()
+                os.fsync(rewritten.fileno())
+            os.chmod(temporary_name, stat.S_IMODE(os.stat(self.model_fname).st_mode))
+            os.replace(temporary_name, self.model_fname)
+            temporary_name = None
+        finally:
+            if temporary_name is not None:
+                os.unlink(temporary_name)
 
     def dump(self, gene_info, transcript_model_storage):
         if not transcript_model_storage:
@@ -87,6 +134,14 @@ class GFFPrinter:
         gene_order = sorted([(g, gene_info_dict[g].gene_region) for g in gene_info_dict.keys()], key=lambda x: x[1])
 
         for gene_id, coords in gene_order:
+            transcript_ids = {transcript_model_storage[i].transcript_id
+                              for i in gene_to_model_dict[gene_id]}
+            if gene_id in self._gene_summaries:
+                start, end, seen_ids = self._gene_summaries[gene_id]
+                seen_ids.update(transcript_ids)
+                self._gene_summaries[gene_id] = (min(start, coords[0]), max(end, coords[1]), seen_ids)
+            else:
+                self._gene_summaries[gene_id] = (coords[0], coords[1], transcript_ids)
             if gene_id not in self.printed_gene_ids:
                 gene_additiional_info = ""
                 if gene_info and gene_id in gene_info.feature_attributes:
@@ -96,9 +151,10 @@ class GFFPrinter:
                     source = gene_info.sources[gene_id]
                 gene_line = '%s\t%s\tgene\t%d\t%d\t.\t%s\t.\tgene_id "%s"; transcripts "%d"; %s\n' % \
                     (gene_info_dict[gene_id].chr_id, source, coords[0], coords[1], gene_info_dict[gene_id].strand,
-                     gene_id, len(gene_to_model_dict[gene_id]), gene_additiional_info)
+                     gene_id, len(transcript_ids), gene_additiional_info)
                 self.out_gff.write(gene_line)
                 self.printed_gene_ids.add(gene_id)
+                self._printed_gene_metadata[gene_id] = (coords[0], coords[1], len(transcript_ids))
 
             for model_index in gene_to_model_dict[gene_id]:
                 model = transcript_model_storage[model_index]

@@ -257,6 +257,11 @@ class ModelReadCounter:
         ra.barcode_id = source.barcode_id
         ra.umi_id = source.umi_id
         ra.read_group_ids = source.read_group_ids
-        ra.additional_attributes = {**source.additional_attributes, **ra.additional_attributes}
+        source_attributes = dict(source.additional_attributes)
+        reference_reason = source_attributes.pop("gene_assignment_reason", None)
+        if reference_reason is not None:
+            source_attributes["reference_gene_assignment_reason"] = reference_reason
+        # Only the final matcher can supply a reason for the final assignment.
+        ra.additional_attributes = {**source_attributes, **ra.additional_attributes}
         ra.mapped_strand = source.mapped_strand
         ra.additional_info = dict(source.additional_info)
