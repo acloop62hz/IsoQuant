@@ -215,6 +215,19 @@ gene. This final-stage fallback does not construct or modify transcript models.
 Gene rows without a retained transcript model can now appear in discovered gene
 counts, so those counts need not equal summed discovered transcript counts.
 
+Real-read assignments with terminal-only transcript ambiguity now retain the
+non-intronic gene subtype when every candidate belongs to one known gene and
+agrees with the trusted read direction. Allowed differences are alternative
+PAS/TSS and terminal elongation, plus consistent match events; internal polyA,
+splice/alignment discrepancies, missing candidate evidence and unknown direction
+are excluded. Transcript classification, candidates and events are preserved.
+Under `unique_splicing_consistent`, this yields one gene count per read;
+`unique_only` and the existing feature-confirmation gate are unchanged.
+Records carry `gene_assignment_reason=same_gene_terminal_ambiguity`. This also
+composes with reference gene-only preservation when no model survives, without
+creating or confirming a transcript model. Recollect BAM assignments to apply
+this classification change to reference counts; old caches are not reclassified.
+
 Old assignment caches remain readable but lack this provenance. Recollect
 assignments from BAM in a fresh output directory to obtain the fix; resuming
 old assignments cannot reconstruct `pt` evidence. Previously generated results
@@ -223,6 +236,6 @@ are not updated automatically.
 Run the focused regression tests with:
 
 ```bash
-python -m unittest isoquant_tests.test_pt_model_filter isoquant_tests.test_exact_chain_candidate_rescue isoquant_tests.test_reference_gene_fallback isoquant_tests.test_read_direction -v
+python -m unittest isoquant_tests.test_pt_model_filter isoquant_tests.test_exact_chain_candidate_rescue isoquant_tests.test_reference_gene_fallback isoquant_tests.test_read_direction isoquant_tests.test_terminal_gene_ambiguity -v
 ```
 

@@ -45,6 +45,22 @@ logger = logging.getLogger('IsoQuant')
 
 IsoformDiff = namedtuple("IsoformDiff", ("id", "diff"))
 
+# Terminal disagreement can leave transcript identity unresolved while the gene
+# is supported. Do not broaden this to internal polyA or splice/alignment errors.
+_TERMINAL_GENE_MAJOR_EVENTS = frozenset({
+    MatchEventSubtype.alternative_polya_site_left,
+    MatchEventSubtype.alternative_polya_site_right,
+    MatchEventSubtype.alternative_tss_left,
+    MatchEventSubtype.alternative_tss_right,
+    MatchEventSubtype.major_exon_elongation_left,
+    MatchEventSubtype.major_exon_elongation_right,
+})
+_TERMINAL_GENE_ALLOWED_EVENTS = _TERMINAL_GENE_MAJOR_EVENTS | frozenset({
+    MatchEventSubtype.exon_elongation_left,
+    MatchEventSubtype.exon_elongation_right,
+    MatchEventSubtype.aligned_polya_tail,
+}) | frozenset(e for e in MatchEventSubtype if MatchEventSubtype.is_consistent(e))
+
 
 @unique
 class AmbiguityResolvingMethod(Enum):
@@ -208,6 +224,44 @@ class LongReadAssigner:
             return candidates
         return [tid for tid in candidates if direction_compatible(
             direction, self.gene_info.isoform_strands.get(tid, "."))]
+
+    def _preserve_terminal_gene_assignment(self, assignment, profile):
+        """Keep one supported gene without resolving its terminal isoform ambiguity.
+
+        Run only for real reads with known direction. Transcript classification,
+        candidates, events, counting strategies and confirmation gates stay intact.
+        """
+        if (assignment.assignment_type != ReadAssignmentType.inconsistent_ambiguous
+                or assignment.gene_assignment_type != ReadAssignmentType.inconsistent):
+            return assignment
+        direction = getattr(profile, "candidate_read_strand", ".")
+        if direction not in ("+", "-"):
+            return assignment
+        matches = assignment.isoform_matches
+        if len(matches) < 2:
+            return assignment
+        genes = {m.assigned_gene for m in matches}
+        if len(genes) != 1 or not next(iter(genes)):
+            return assignment
+        gene = next(iter(genes))
+        if self.gene_info.gene_strands.get(gene) != direction:
+            return assignment
+        has_terminal_difference = False
+        for match in matches:
+            tid = match.assigned_transcript
+            if (not tid or self.gene_info.gene_id_map.get(tid) != gene
+                    or self.gene_info.isoform_strands.get(tid) != direction
+                    or match.transcript_strand != direction
+                    or not match.match_subclassifications):
+                return assignment
+            for event in match.match_subclassifications:
+                if event.event_type not in _TERMINAL_GENE_ALLOWED_EVENTS:
+                    return assignment
+                has_terminal_difference |= event.event_type in _TERMINAL_GENE_MAJOR_EVENTS
+        if has_terminal_difference:
+            assignment.gene_assignment_type = ReadAssignmentType.inconsistent_non_intronic
+            assignment.additional_attributes["gene_assignment_reason"] = "same_gene_terminal_ambiguity"
+        return assignment
 
     def _restore_exact_chain_candidates(self, profile, candidates):
         """Let exact, same-strand full chains reach the existing fine verifier."""
@@ -698,7 +752,8 @@ class LongReadAssigner:
             isoform_matches = self.create_inconsistent_matches(read_matches, best_isoforms, penalty_score)
         else:
             isoform_matches = self.create_consistent_matches(read_matches, best_isoforms, combined_read_profile)
-        return ReadAssignment(read_id, assignment_type, self.string_pools, match=isoform_matches)
+        assignment = ReadAssignment(read_id, assignment_type, self.string_pools, match=isoform_matches)
+        return self._preserve_terminal_gene_assignment(assignment, combined_read_profile)
 
     def classify_assignment(self, best_isoforms, read_matches):
         is_abmiguous = len(best_isoforms) > 1
