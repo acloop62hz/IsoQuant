@@ -156,6 +156,9 @@ class ModelReadCounter:
                         full_profile_constructor = CombinedProfileConstructor(model_gene_info, self.args)
                     profile = full_profile_constructor.construct_profiles(source.corrected_exons,
                                                                           source.polya_info, [])
+                    terminal = source.additional_info.get("pt_terminal")
+                    external_strand = ({1: "+", 2: "-"}.get(terminal[0]) if terminal else None)
+                    full_assigner.set_candidate_read_strand(profile, source.mapped_strand, external_strand)
                     ra = full_assigner.assign_to_isoform(read_id, profile)
                 else:
                     ra = ReadAssignment(read_id, ReadAssignmentType.noninformative, self.string_pools)

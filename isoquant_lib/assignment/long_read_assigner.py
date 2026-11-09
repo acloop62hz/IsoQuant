@@ -19,6 +19,7 @@ from isoquant_lib.common import (
     extra_exon_percentage,
     has_overlapping_features,
     jaccard_similarity,
+    junctions_from_blocks,
     overlap_intervals,
     overlaps,
     read_coverage_fraction,
@@ -194,6 +195,49 @@ class LongReadAssigner:
         # logger.debug("+ + Closest matching isoforms " + str(best_candidates))
 
         return best_candidates
+
+    def set_candidate_read_strand(self, profile, mapped_strand, external_strand=None):
+        """Pass reliable read direction only to the exact-chain candidate rescue.
+
+        Model-comparison profiles never call this method. Unknown direction
+        disables the rescue; no assignment strand or polyA requirement changes.
+        """
+        strand = external_strand
+        if strand not in ("+", "-"):
+            stranded = getattr(self.params, "stranded", None)
+            if mapped_strand in ("+", "-") and stranded == "forward":
+                strand = mapped_strand
+            elif mapped_strand in ("+", "-") and stranded == "reverse":
+                strand = "-" if mapped_strand == "+" else "+"
+            else:
+                strand = "."
+        profile.candidate_read_strand = strand
+
+    def _restore_exact_chain_candidates(self, profile, candidates):
+        """Let exact, same-strand full chains reach the existing fine verifier."""
+        strand = getattr(profile, "candidate_read_strand", ".")
+        exons = profile.read_split_exon_profile.read_features
+        if strand not in ("+", "-") or len(exons) < 2:
+            return candidates
+        # Build lazily once per assigner; do not scan every model for each read.
+        if not hasattr(self, "_exact_chain_candidate_index"):
+            index = {}
+            for tid, introns in self.gene_info.all_isoforms_introns.items():
+                if introns:
+                    key = (self.gene_info.isoform_strands[tid], tuple(introns))
+                    index.setdefault(key, []).append(tid)
+            self._exact_chain_candidate_index = index
+        key = (strand, tuple(junctions_from_blocks(exons)))
+        present = set(candidates or ())
+        restored = []
+        for tid in self._exact_chain_candidate_index.get(key, ()):
+            start, end = self.gene_info.transcript_region(tid)
+            if (tid not in present and abs(exons[0][0] - start) <= self.params.apa_delta
+                    and abs(exons[-1][1] - end) <= self.params.apa_delta):
+                restored.append(tid)
+        if not restored:
+            return candidates
+        return list(candidates or ()) + sorted(restored)
 
     # detect exon elongation subtyp
     def categorize_exon_elongation_subtype(self, read_split_exon_profile, isoform_id):
@@ -622,6 +666,7 @@ class LongReadAssigner:
 
         # select most similar isoforms based on multiple criteria
         best_candidates = self.select_similar_isoforms(combined_read_profile)
+        best_candidates = self._restore_exact_chain_candidates(combined_read_profile, best_candidates)
         if not best_candidates:
             return self.assign_to_overlapping_genes(read_id, read_region, MatchClassification.genic)
 

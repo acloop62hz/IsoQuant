@@ -482,6 +482,8 @@ class AlignmentCollector:
             # if self.params.cage:
             #    alignment_info.add_cage_info(self.cage_finder)
             alignment_info.construct_profiles(profile_constructor)
+            assigner.set_candidate_read_strand(alignment_info.combined_profile, mapped_strand,
+                                               resolve_external_strand(external_polya, mapped_strand))
             read_assignment = assigner.assign_to_isoform(read_id, alignment_info.combined_profile)
 
             if (read_assignment.assignment_type not in [ReadAssignmentType.unique,
