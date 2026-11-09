@@ -18,6 +18,7 @@ from ..gene_info import TranscriptModel, TranscriptModelType
 from isoquant_lib.model_construction.intron_graph import TerminalVertex
 from ..assignment.isoform_assignment import is_matching_assignment, ReadAssignment
 from ..terminal_prediction.polya_finder import PolyAInfo
+from ..assignment.read_direction import read_matches_strand
 from .context import StrandnessReportingLevel
 
 logger = logging.getLogger('IsoQuant')
@@ -131,6 +132,9 @@ class GraphBasedConstructor:
 
             new_model = None
             if reference_isoform:
+                compatible_reads = [a for a in self.ctx.path_storage.paths_to_reads[path]
+                                    if read_matches_strand(a, self.gene_info.isoform_strands[reference_isoform], self.args)]
+                count = len(compatible_reads)
                 # adding FL reference isoform
                 if reference_isoform in self.store.detected_known_isoforms:
                     pass
@@ -152,6 +156,9 @@ class GraphBasedConstructor:
                 polya_site = has_polya or has_polyt
                 transcript_strand = self.strand_detector.get_strand(intron_path, has_polya, has_polyt)
                 transcript_clean_strand = self.strand_detector.get_clean_strand(intron_path)
+                compatible_reads = [a for a in self.ctx.path_storage.paths_to_reads[path]
+                                    if read_matches_strand(a, transcript_strand, self.args)]
+                count = len(compatible_reads)
 
                 # logger.debug("uuu Novel isoform %s has coverage: %d cutoff = %d, component cov = %d, max_coverage = %d"
                 #             % (new_transcript_id, count, novel_isoform_cutoff, component_coverage, self.intron_graph.max_coverage))
@@ -171,7 +178,7 @@ class GraphBasedConstructor:
                 else:
                     if self.use_technical_replicas and self.file_name_group_idx >= 0:
                         # Check if reads come from same file (technical replicates)
-                        read_assignments = self.ctx.path_storage.paths_to_reads[path]
+                        read_assignments = compatible_reads
                         if read_assignments:
                             file_groups = set([a.read_group[self.file_name_group_idx]
                                                for a in read_assignments
@@ -202,5 +209,5 @@ class GraphBasedConstructor:
 
             if new_model:
                 self.store.transcript_model_storage.append(new_model)
-                for read_assignment in self.ctx.path_storage.paths_to_reads[path]:
+                for read_assignment in compatible_reads:
                     self.store.save_assigned_read(read_assignment, new_model.transcript_id)

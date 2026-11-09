@@ -190,6 +190,17 @@ fine verifier decides the result, including ambiguity and polyA consistency.
 No tail evidence is required to admit these candidates. Improved reference
 assignments can indirectly change discovery results on rerun.
 
+Trustworthy protocol-adjusted BAM/external direction now filters all real-read
+transcript candidates before ranking, plus gene-overlap fallbacks, construction
+support, reassignment and final-count shortcuts. Explicit direction conflicts
+remain unassigned and carry `direction_conflict=true`; unavailable direction
+retains legacy behavior. Graph terminal evidence uses that same direction.
+Model strands are not flipped: incompatible support is removed before count,
+coverage and terminal-support gates, and thresholds are reapplied. Reference
+selection from aggregate FL paths can conservatively skip a model rather than
+search another same-strand reference. Known-direction reads do not support
+models with unknown strand. Model-to-model comparison profiles are unchanged.
+
 Final model assignment now preserves a reference gene-only fallback when the
 read otherwise has neither a gene nor a transcript. The source must identify
 one gene with a unique/minor/non-intronic gene classification, agree with the
@@ -212,6 +223,6 @@ are not updated automatically.
 Run the focused regression tests with:
 
 ```bash
-python -m unittest isoquant_tests.test_pt_model_filter isoquant_tests.test_exact_chain_candidate_rescue isoquant_tests.test_reference_gene_fallback -v
+python -m unittest isoquant_tests.test_pt_model_filter isoquant_tests.test_exact_chain_candidate_rescue isoquant_tests.test_reference_gene_fallback isoquant_tests.test_read_direction -v
 ```
 

@@ -10,6 +10,7 @@
 # reads by path. Moved verbatim out of graph_based_model_construction.
 
 from collections import defaultdict
+from ..assignment.read_direction import effective_read_strand, CONFLICT
 
 from isoquant_lib.model_construction.intron_graph import TerminalVertex
 
@@ -25,13 +26,14 @@ class IntronPathStorage:
 
     def fill(self, read_assignments):
         for a in read_assignments:
-            if a.multimapper:
+            strand = effective_read_strand(a, self.params)
+            if a.multimapper or strand == CONFLICT:
                 continue
             intron_path = self.path_processor.thread_introns(a.corrected_introns)
             if not intron_path:
                 continue
             read_end = a.corrected_exons[-1][1]
-            is_end_trusted = a.strand == '+' and \
+            is_end_trusted = strand == '+' and \
                 (a.polya_info.external_polya_pos != -1 or
                  a.polya_info.internal_polya_pos != -1)
             terminal_vertex = self.path_processor.thread_ends(intron_path[-1], read_end, is_end_trusted)
@@ -39,7 +41,7 @@ class IntronPathStorage:
                 intron_path.append(terminal_vertex)
 
             read_start = a.corrected_exons[0][0]
-            is_start_trusted = a.strand == '-' and \
+            is_start_trusted = strand == '-' and \
                 (a.polya_info.external_polyt_pos != -1 or
                  a.polya_info.internal_polyt_pos != -1)
             starting_vertex = self.path_processor.thread_starts(intron_path[0], read_start, is_start_trusted)

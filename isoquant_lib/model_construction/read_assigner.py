@@ -16,6 +16,7 @@ from typing import Dict
 from ..gene_info import GeneInfo, TranscriptModelType
 from ..assignment.long_read_assigner import LongReadAssigner
 from ..assignment.long_read_profiles import CombinedProfileConstructor
+from ..assignment.read_direction import read_matches_strand, external_read_direction
 from .context import reference_unique_known_isoform
 
 logger = logging.getLogger('IsoQuant')
@@ -59,7 +60,8 @@ class ConstructionReadAssigner:
                     owned.get(model.transcript_id, 0) > 0):
                 continue  # FL-path known that still owns reads: co-expressed, leave it
             for a in self.store.transcript_read_ids[model.transcript_id]:
-                read_to_fl.setdefault(a.read_id, model.transcript_id)
+                if read_matches_strand(a, model.strand, self.args):
+                    read_to_fl.setdefault(a.read_id, model.transcript_id)
 
         surviving_ids = {m.transcript_id for m in self.store.transcript_model_storage}
         emptied_knowns = []
@@ -122,6 +124,9 @@ class ConstructionReadAssigner:
             # out / unsupported), the read is left unassigned rather than dragged
             # elsewhere. Inert without --genedb (no known reference isoforms).
             known_iso = reference_unique_known_isoform(assignment)
+            if known_iso is not None and not read_matches_strand(
+                    assignment, self.ctx.gene_info.isoform_strands.get(known_iso, "."), self.args):
+                known_iso = None
             if known_iso is not None:
                 if known_iso in model_ids:
                     self.store.transcript_read_ids[known_iso].append(assignment)
@@ -136,6 +141,8 @@ class ConstructionReadAssigner:
             read_exons = assignment.corrected_exons
             # logger.debug("# Checking read %s: %s" % (assignment.read_id, str(read_exons)))
             model_combined_profile = profile_constructor.construct_profiles(read_exons, assignment.polya_info, [])
+            assigner.set_candidate_read_strand(model_combined_profile, assignment.mapped_strand,
+                                               external_read_direction(assignment))
             model_assignment = assigner.assign_to_isoform(assignment.read_id, model_combined_profile)
             model_assignment.read_group = assignment.read_group  # Full list, not just [0]
             # check that no serious contradiction occurs

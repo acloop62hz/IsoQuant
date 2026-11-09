@@ -13,6 +13,7 @@
 # Operates on the shared ModelStore via the ModelConstructionContext.
 
 import logging
+from ..assignment.read_direction import read_matches_strand
 from collections import defaultdict
 from typing import Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 
@@ -175,6 +176,8 @@ class TranscriptEndProcessor:
         start_reads = defaultdict(list)
         end_reads = defaultdict(list)
         for a in assigned_reads:
+            if not read_matches_strand(a, strand, self.args):
+                continue
             ex = a.corrected_exons
             if strand == '+':
                 if ex[0][0] < first_exon_right:           # 5' TSS (all reads)
@@ -244,7 +247,7 @@ class TranscriptEndProcessor:
                 for read in nic_reads:
                     if len(self.store.transcript_read_ids[source_id]) <= 1:
                         break
-                    self.store.move_read_to_model(read, source_id, nic.transcript_id)
+                    self.store.move_read_to_model(read, source_id, nic.transcript_id, target_strand=nic.strand)
         if new_models:
             logger.debug("Added %d known alternative-end NICs" % len(new_models))
             self.store.transcript_model_storage.extend(new_models)

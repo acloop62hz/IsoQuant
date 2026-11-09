@@ -24,6 +24,8 @@ from ..assignment.isoform_assignment import (
 )
 from ..assignment.long_read_assigner import LongReadAssigner
 from ..assignment.long_read_profiles import CombinedProfileConstructor
+from ..assignment.read_direction import (trusted_read_direction, external_read_direction,
+                                         read_matches_strand, CONFLICT)
 from .context import reference_unique_known_isoform
 
 logger = logging.getLogger('IsoQuant')
@@ -58,14 +60,7 @@ class ModelReadCounter:
         mapped = source.mapped_strand
         if mapped not in ("+", "-") or source.chr_id != self.gene_info.chr_id:
             return
-        mode = getattr(self.args, "stranded", None)
-        bam_direction = (mapped if mode == "forward" else
-                         ("-" if mapped == "+" else "+") if mode == "reverse" else None)
-        terminal = source.additional_info.get("pt_terminal")
-        external_direction = ({1: "+", 2: "-"}.get(terminal[0]) if terminal else None)
-        if bam_direction and external_direction and bam_direction != external_direction:
-            return
-        direction = external_direction or bam_direction
+        direction = trusted_read_direction(source, self.args)
         if direction not in ("+", "-") or self.gene_info.gene_strands.get(gene) != direction:
             return
 
@@ -128,6 +123,8 @@ class ModelReadCounter:
         # read onto the model as unique_minor_difference (events dropped) so it
         # still counts as unique and points at the model it built.
         model = model_by_id[transcript_id]
+        if not read_matches_strand(source, model.strand, self.args):
+            raise ValueError("Incompatible construction direction: " + transcript_id)
         if (model.transcript_type == TranscriptModelType.known and
                 source.assignment_type in (ReadAssignmentType.unique,
                                            ReadAssignmentType.unique_minor_difference)):
@@ -138,6 +135,7 @@ class ModelReadCounter:
                                       self.string_pools, match=[reuse_match])
         assigner, profile_constructor = self._single_model_assigner(model, cache)
         profile = profile_constructor.construct_profiles(source.corrected_exons, source.polya_info, [])
+        assigner.set_candidate_read_strand(profile, source.mapped_strand, external_read_direction(source))
         ra = assigner.assign_to_isoform(source.read_id, profile)
         if (ra.assignment_type.is_consistent() and ra.isoform_matches and
                 ra.isoform_matches[0].assigned_transcript == transcript_id):
@@ -147,12 +145,13 @@ class ModelReadCounter:
         return ReadAssignment(source.read_id, ReadAssignmentType.unique_minor_difference,
                               self.string_pools, match=[forced_match])
 
-    def _build_discarded_assignment(self, read_id, gene, surviving_genes):
+    def _build_discarded_assignment(self, read_id, gene, surviving_genes, source):
         # A read whose reference-unique known isoform was dropped: no transcript.
         # It still belongs to its gene, so it counts toward that gene when the gene
         # has a surviving model. Otherwise the conservative reference-gene-only
         # fallback below can retain independently validated gene evidence.
-        if gene is not None and gene in surviving_genes:
+        if gene is not None and gene in surviving_genes and read_matches_strand(
+                source, self.gene_info.gene_strands.get(gene, "."), self.args):
             match = IsoformMatch(MatchClassification.genic, self.string_pools, assigned_gene=gene)
             ra = ReadAssignment(read_id, ReadAssignmentType.discarded, self.string_pools, match=[match])
             ra.gene_assignment_type = ReadAssignmentType.unique
@@ -203,15 +202,20 @@ class ModelReadCounter:
         for source in read_assignments:
             read_id = source.read_id
             constr_tid = self.store.construction_assignment.get(read_id)
+            if constr_tid in model_by_id and not read_matches_strand(source, model_by_id[constr_tid].strand, self.args):
+                constr_tid = None
             if constr_tid is not None and constr_tid in model_ids:
                 ra = self._model_read_assignment_single(source, constr_tid, model_by_id, single_cache)
             else:
                 known_iso = reference_unique_known_isoform(source)
+                if known_iso is not None and not read_matches_strand(
+                        source, self.gene_info.isoform_strands.get(known_iso, "."), self.args):
+                    known_iso = None
                 if known_iso is not None and known_iso in model_ids:
                     ra = self._model_read_assignment_single(source, known_iso, model_by_id, single_cache)
                 elif known_iso is not None:
                     gene = self.gene_info.gene_id_map.get(known_iso)
-                    ra = self._build_discarded_assignment(read_id, gene, surviving_genes)
+                    ra = self._build_discarded_assignment(read_id, gene, surviving_genes, source)
                 elif model_ids:
                     if full_assigner is None:
                         full_assigner = LongReadAssigner(model_gene_info, self.args,
@@ -219,9 +223,8 @@ class ModelReadCounter:
                         full_profile_constructor = CombinedProfileConstructor(model_gene_info, self.args)
                     profile = full_profile_constructor.construct_profiles(source.corrected_exons,
                                                                           source.polya_info, [])
-                    terminal = source.additional_info.get("pt_terminal")
-                    external_strand = ({1: "+", 2: "-"}.get(terminal[0]) if terminal else None)
-                    full_assigner.set_candidate_read_strand(profile, source.mapped_strand, external_strand)
+                    full_assigner.set_candidate_read_strand(profile, source.mapped_strand,
+                                                           external_read_direction(source))
                     ra = full_assigner.assign_to_isoform(read_id, profile)
                 else:
                     ra = ReadAssignment(read_id, ReadAssignmentType.noninformative, self.string_pools)
@@ -229,6 +232,8 @@ class ModelReadCounter:
             ra.gene_info = model_gene_info
             self._copy_read_aux(ra, source)
             self._reference_gene_only_fallback(source, ra)
+            if trusted_read_direction(source, self.args) == CONFLICT:
+                ra.additional_attributes["direction_conflict"] = "true"
             self.model_read_assignments.append(ra)
             self.transcript_counter.add_read_info(ra)
             self.gene_counter.add_read_info(ra)
@@ -252,4 +257,6 @@ class ModelReadCounter:
         ra.barcode_id = source.barcode_id
         ra.umi_id = source.umi_id
         ra.read_group_ids = source.read_group_ids
-        ra.additional_attributes = source.additional_attributes
+        ra.additional_attributes = {**source.additional_attributes, **ra.additional_attributes}
+        ra.mapped_strand = source.mapped_strand
+        ra.additional_info = dict(source.additional_info)

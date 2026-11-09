@@ -36,6 +36,7 @@ from .isoform_assignment import (
     elongation_cost,
 )
 from .long_read_profiles import OverlappingFeaturesProfileConstructor
+from .read_direction import resolve_read_direction, direction_compatible, CONFLICT
 from .junction_comparator import JunctionComparator
 from isoquant_lib.terminal_prediction.polya_verification import PolyAVerifier
 
@@ -165,6 +166,7 @@ class LongReadAssigner:
         read_split_exon_profile = combined_read_profile.read_split_exon_profile
         overlapping_isoforms = self.find_overlapping_isoforms(read_split_exon_profile,
                                                               self.gene_info.split_exon_profiles)
+        overlapping_isoforms = self._strand_candidates(combined_read_profile, overlapping_isoforms)
         if not overlapping_isoforms:
             return
         # select isoforms with non-negative nucleotide score
@@ -197,21 +199,15 @@ class LongReadAssigner:
         return best_candidates
 
     def set_candidate_read_strand(self, profile, mapped_strand, external_strand=None):
-        """Pass reliable read direction only to the exact-chain candidate rescue.
+        """Attach real-read direction; aggregate model profiles omit this field."""
+        profile.candidate_read_strand = resolve_read_direction(self.params, mapped_strand, external_strand)
 
-        Model-comparison profiles never call this method. Unknown direction
-        disables the rescue; no assignment strand or polyA requirement changes.
-        """
-        strand = external_strand
-        if strand not in ("+", "-"):
-            stranded = getattr(self.params, "stranded", None)
-            if mapped_strand in ("+", "-") and stranded == "forward":
-                strand = mapped_strand
-            elif mapped_strand in ("+", "-") and stranded == "reverse":
-                strand = "-" if mapped_strand == "+" else "+"
-            else:
-                strand = "."
-        profile.candidate_read_strand = strand
+    def _strand_candidates(self, profile, candidates):
+        direction = getattr(profile, "candidate_read_strand", ".")
+        if direction == ".":
+            return candidates
+        return [tid for tid in candidates if direction_compatible(
+            direction, self.gene_info.isoform_strands.get(tid, "."))]
 
     def _restore_exact_chain_candidates(self, profile, candidates):
         """Let exact, same-strand full chains reach the existing fine verifier."""
@@ -458,7 +454,7 @@ class LongReadAssigner:
 
     # =========== MAIN PART ============
 
-    def assign_to_overlapping_genes(self, read_id, read_region, match_classification):
+    def assign_to_overlapping_genes(self, read_id, read_region, match_classification, direction="."):
         """ build a noninformative assignment that records the gene(s) the read overlaps
 
         Transcript stays unassigned; gene_assignment_type is derived from the number
@@ -470,7 +466,8 @@ class LongReadAssigner:
                          assigned_gene=gene_id,
                          transcript_strand=self.gene_info.gene_strands.get(gene_id, '.'))
             for gene_id, gene_region in self.gene_info.get_gene_regions().items()
-            if overlaps(read_region, gene_region)
+            if overlaps(read_region, gene_region) and direction_compatible(
+                direction, self.gene_info.gene_strands.get(gene_id, "."))
         ]
         if not gene_matches:
             # no overlapping gene -> keep the prior single, gene-less classification
@@ -493,6 +490,10 @@ class LongReadAssigner:
         """
         read_intron_profile = combined_read_profile.read_intron_profile
         read_split_exon_profile = combined_read_profile.read_split_exon_profile
+        if getattr(combined_read_profile, "candidate_read_strand", ".") == CONFLICT:
+            assignment = ReadAssignment(read_id, ReadAssignmentType.noninformative, self.string_pools)
+            assignment.additional_attributes["direction_conflict"] = "true"
+            return assignment
 
         # logger.debug("> Read blocks" + str(read_split_exon_profile.read_features))
         # logger.debug("Gene split exons" + str(self.gene_info.split_exon_profiles.features))
@@ -520,11 +521,13 @@ class LongReadAssigner:
             elif all(el != 1 for el in read_split_exon_profile.gene_profile):
                 # logger.debug("EMPTY - intronic")
                 assignment = self.assign_to_overlapping_genes(read_id, read_region,
-                                                              MatchClassification.genic_intron)
+                                                              MatchClassification.genic_intron,
+                                                              getattr(combined_read_profile, "candidate_read_strand", "."))
             else:
                 # logger.debug("EMPTY - genic")
                 assignment = self.assign_to_overlapping_genes(read_id, read_region,
-                                                              MatchClassification.genic)
+                                                              MatchClassification.genic,
+                                                              getattr(combined_read_profile, "candidate_read_strand", "."))
             return assignment
 
         elif any(el == -1 for el in read_intron_profile.read_profile) \
@@ -567,6 +570,7 @@ class LongReadAssigner:
         isoform_split_exon_profiles = self.gene_info.split_exon_profiles.profiles
 
         containing_isoforms = self.find_containing_isoforms(read_split_exon_profile, isoform_split_exon_profiles)
+        containing_isoforms = self._strand_candidates(combined_read_profile, containing_isoforms)
         if not containing_isoforms:
             return None
 
@@ -668,19 +672,22 @@ class LongReadAssigner:
         best_candidates = self.select_similar_isoforms(combined_read_profile)
         best_candidates = self._restore_exact_chain_candidates(combined_read_profile, best_candidates)
         if not best_candidates:
-            return self.assign_to_overlapping_genes(read_id, read_region, MatchClassification.genic)
+            return self.assign_to_overlapping_genes(read_id, read_region, MatchClassification.genic,
+                                                    getattr(combined_read_profile, "candidate_read_strand", "."))
 
         # logger.debug("* Best candidates for inconsistency detection: " + str(best_candidates))
         # detect inconsistency for each one
         read_matches = self.detect_inconsistensies(read_id, combined_read_profile, best_candidates)
         if not read_matches:
-            return self.assign_to_overlapping_genes(read_id, read_region, MatchClassification.genic)
+            return self.assign_to_overlapping_genes(read_id, read_region, MatchClassification.genic,
+                                                    getattr(combined_read_profile, "candidate_read_strand", "."))
         # logger.debug("* Inconsistencies detected: " + str(read_matches))
 
         # select ones with the least number of inconsistent events
         best_isoforms, penalty_score = self.select_best_among_inconsistent(combined_read_profile, read_matches)
         if not best_isoforms:
-            return self.assign_to_overlapping_genes(read_id, read_region, MatchClassification.genic)
+            return self.assign_to_overlapping_genes(read_id, read_region, MatchClassification.genic,
+                                                    getattr(combined_read_profile, "candidate_read_strand", "."))
         # logger.debug("* Selected isoforms: " + str(best_isoforms))
 
         best_isoforms = sorted(best_isoforms)

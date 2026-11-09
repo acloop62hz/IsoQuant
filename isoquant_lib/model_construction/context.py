@@ -20,6 +20,7 @@ from typing import Dict, List
 from ..gene_info import StrandDetector, TranscriptModel
 from isoquant_lib.model_construction.intron_graph import IntronGraph
 from ..assignment.isoform_assignment import ReadAssignment
+from ..assignment.read_direction import read_matches_strand, trusted_read_direction, CONFLICT
 from ..assignment.long_read_assigner import LongReadAssigner
 from ..assignment.long_read_profiles import CombinedProfileConstructor
 from .intron_path import IntronPathProcessor, IntronPathStorage
@@ -62,6 +63,8 @@ class ModelStore:
 
     def __init__(self, gene_info):
         self.gene_info = gene_info
+        self.args = None
+        self._binding_strands = {}
         self.transcript_model_storage = []
         self.transcript_read_ids = defaultdict(list)
         self.internal_counter = defaultdict(int)
@@ -74,23 +77,42 @@ class ModelStore:
         # resolve_read_ownership_conflicts uses this after filtering.
         self.nonfl_known_reads: Dict[str, List[ReadAssignment]] = {}
 
-    def save_assigned_read(self, read_assignment: ReadAssignment, transcript_id: str) -> None:
+    def binding_compatible(self, read, transcript_id, strand=None):
+        if strand is None:
+            strand = self._binding_strands.get(transcript_id)
+            if strand is None:
+                strand = next((m.strand for m in self.transcript_model_storage
+                               if m.transcript_id == transcript_id),
+                              getattr(self.gene_info, "isoform_strands", {}).get(transcript_id, "."))
+                self._binding_strands[transcript_id] = strand
+        return read_matches_strand(read, strand, self.args)
+
+    def save_assigned_read(self, read_assignment: ReadAssignment, transcript_id: str) -> bool:
+        if not self.binding_compatible(read_assignment, transcript_id):
+            return False
         read_id = read_assignment.read_id
         self.transcript_read_ids[transcript_id].append(read_assignment)
         self.internal_counter[transcript_id] += 1
         self.read_assignment_counts[read_id] += 1
         self.construction_assignment[read_id] = transcript_id
+        return True
 
     def move_read_to_model(self, read_assignment: ReadAssignment,
-                           source_id: str, target_id: str) -> None:
+                           source_id: str, target_id: str, target_strand=None) -> bool:
         # Move one read's construction membership from source_id to target_id (an
         # alternative-end NIC derived from it). ReadAssignment has no __eq__, so
         # list.remove strips the exact object; net read_assignment_counts is
         # unchanged (-1 here, +1 in save_assigned_read).
+        # A pending NIC may not yet be in model storage. Validate before touching
+        # source membership; its caller supplies the explicit target strand.
+        if not self.binding_compatible(read_assignment, target_id, target_strand):
+            return False
+        if target_strand is not None:
+            self._binding_strands[target_id] = target_strand
         self.transcript_read_ids[source_id].remove(read_assignment)
         self.internal_counter[source_id] -= 1
         self.read_assignment_counts[read_assignment.read_id] -= 1
-        self.save_assigned_read(read_assignment, target_id)
+        return self.save_assigned_read(read_assignment, target_id)
 
     def delete_from_storage(self, transcript_id: str) -> None:
         for a in self.transcript_read_ids[transcript_id]:
@@ -132,6 +154,7 @@ class ModelConstructionContext:
         self.polya_predictions = polya_predictions
         self.tss_predictions = tss_predictions
         self.store = store
+        self.store.args = args
 
         self.grouping_strategy_names = grouping_strategy_names if grouping_strategy_names else []
         self.use_technical_replicas = use_technical_replicas
@@ -212,6 +235,8 @@ class ModelConstructionContext:
         return known_isoforms
 
     def build_graph(self, read_assignment_storage):
+        read_assignment_storage = [a for a in read_assignment_storage
+                                   if trusted_read_direction(a, self.args) != CONFLICT]
         self.intron_graph = IntronGraph(self.args, self.gene_info, read_assignment_storage,
                                         polya_predictions=self.polya_predictions,
                                         tss_predictions=self.tss_predictions)

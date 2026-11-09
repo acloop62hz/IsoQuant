@@ -7,6 +7,7 @@
 
 import logging
 import queue
+from ..assignment.read_direction import effective_read_strand, CONFLICT
 from collections import defaultdict
 from typing import Dict, List, Optional, Tuple
 
@@ -626,7 +627,8 @@ class IntronGraph:
         read_starts = defaultdict(lambda: defaultdict(int))
 
         for assignment in self.read_assignments:
-            if assignment.multimapper or not assignment.corrected_introns:
+            strand = effective_read_strand(assignment, self.params)
+            if strand == CONFLICT or assignment.multimapper or not assignment.corrected_introns:
                 continue
             if any(intron in self.intron_collector.discarded_introns for intron in
                    assignment.corrected_introns):
@@ -637,7 +639,7 @@ class IntronGraph:
             if read_start >= starting_intron[0]:
                 # corner case when substituted intron appears to be shifted to the left
                 continue
-            polyt_detected = assignment.strand == '-' and \
+            polyt_detected = strand == '-' and \
                 (assignment.polya_info.external_polyt_pos != -1 or
                  assignment.polya_info.internal_polyt_pos != -1)
             if polyt_detected:
@@ -650,7 +652,7 @@ class IntronGraph:
             if read_end <= terminating_intron[1]:
                 # corner case when substituted intron appears to be shifted to the right
                 continue
-            polya_detected = assignment.strand == '+' and \
+            polya_detected = strand == '+' and \
                 (assignment.polya_info.external_polya_pos != -1 or
                  assignment.polya_info.internal_polya_pos != -1)
             if polya_detected:

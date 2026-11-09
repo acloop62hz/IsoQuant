@@ -16,6 +16,7 @@ from ..common import TranscriptNaming, interval_len, intersection_len
 from ..gene_info import TranscriptModel, TranscriptModelType
 from isoquant_lib.model_construction.intron_graph import TerminalVertex
 from ..assignment.isoform_assignment import MatchEventSubtype
+from ..assignment.read_direction import read_matches_strand, trusted_read_direction, CONFLICT
 
 logger = logging.getLogger('IsoQuant')
 
@@ -39,6 +40,8 @@ class AssignmentBasedConstructor:
         novel_mono_exon_reads = []
 
         for read_assignment in read_assignment_storage:
+            if trusted_read_direction(read_assignment, self.args) == CONFLICT:
+                continue
             if len(read_assignment.corrected_exons) <= 2 and \
                     (read_assignment.multimapper or read_assignment.mapping_quality < self.args.simple_alignments_mapq_cutoff):
                 continue
@@ -55,6 +58,8 @@ class AssignmentBasedConstructor:
                 continue
 
             refrenence_isoform_id = read_assignment.isoform_matches[0].assigned_transcript
+            if not read_matches_strand(read_assignment, self.gene_info.isoform_strands.get(refrenence_isoform_id, "."), self.args):
+                continue
             if refrenence_isoform_id in self.store.detected_known_isoforms:
                 continue
 
@@ -140,10 +145,10 @@ class AssignmentBasedConstructor:
         polya_reads = defaultdict(list)
         polyt_reads = defaultdict(list)
         for a in novel_mono_exon_reads:
-            if a.polya_info.external_polya_pos != -1:
+            if a.polya_info.external_polya_pos != -1 and read_matches_strand(a, "+", self.args):
                 if not self.is_internal_monoexonic_read(a, polya_exons, forward=True):
                     polya_reads[a.polya_info.external_polya_pos].append(a)
-            if a.polya_info.external_polyt_pos != -1:
+            if a.polya_info.external_polyt_pos != -1 and read_matches_strand(a, "-", self.args):
                 if not self.is_internal_monoexonic_read(a, polyt_exons, forward=False):
                     polyt_reads[a.polya_info.external_polyt_pos].append(a)
 

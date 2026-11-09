@@ -13,6 +13,7 @@ from queue import PriorityQueue
 from isoquant_lib.common import interval_len, junctions_from_blocks, overlaps
 from isoquant_lib.gene_info import GeneInfo, StrandDetector
 from isoquant_lib.assignment.long_read_assigner import LongReadAssigner
+from isoquant_lib.assignment.read_direction import resolve_read_direction, trusted_read_direction, CONFLICT
 from isoquant_lib.assignment.long_read_profiles import CombinedProfileConstructor
 from isoquant_lib.assignment.isoform_assignment import (
     IsoformMatch,
@@ -438,6 +439,10 @@ class AlignmentCollector:
             # Ensure read_group is always a list
             read_assignment.read_group = group_ids if isinstance(group_ids, list) else [group_ids]
             read_assignment.mapped_strand = mapped_strand
+            external_direction = resolve_external_strand(external_polya, mapped_strand)
+            # Persist only evidence not reconstructible from the protocol/BAM.
+            if external_direction in ("+", "-") and external_direction != resolve_read_direction(self.params, mapped_strand):
+                read_assignment.additional_info["external_read_strand"] = external_direction
             read_assignment.strand = self.get_assignment_strand(read_assignment)
             read_assignment.chr_id = self.chr_id
             read_assignment.multimapper = alignment.is_secondary
@@ -519,6 +524,10 @@ class AlignmentCollector:
             # Ensure read_group is always a list
             read_assignment.read_group = group_ids if isinstance(group_ids, list) else [group_ids]
             read_assignment.mapped_strand = mapped_strand
+            external_direction = resolve_external_strand(external_polya, mapped_strand)
+            # Persist only evidence not reconstructible from the protocol/BAM.
+            if external_direction in ("+", "-") and external_direction != resolve_read_direction(self.params, mapped_strand):
+                read_assignment.additional_info["external_read_strand"] = external_direction
             read_assignment.strand = self.get_assignment_strand(read_assignment)
             AlignmentCollector.check_antisense(read_assignment)
             AlignmentCollector.import_bam_tags(alignment, read_assignment, self.params.bam_tags)
@@ -540,6 +549,12 @@ class AlignmentCollector:
             yield read_assignment
 
     def get_assignment_strand(self, read_assignment):
+        direction = trusted_read_direction(read_assignment, self.params)
+        if direction == CONFLICT:
+            read_assignment.additional_attributes["direction_conflict"] = "true"
+            return "."
+        if direction in ("+", "-"):
+            return direction
         if read_assignment.isoform_matches and read_assignment.assignment_type in \
                 [ReadAssignmentType.unique, ReadAssignmentType.unique_minor_difference]:
             return read_assignment.isoform_matches[0].transcript_strand
