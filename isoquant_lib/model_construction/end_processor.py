@@ -40,7 +40,7 @@ class TranscriptEndProcessor:
         self.novel_apa = ctx.novel_apa
 
     def correct_novel_transcript_ends(self, transcript_model: TranscriptModel,
-                                      assigned_reads: List[ReadAssignment]) -> None:
+                                      assigned_reads: List[ReadAssignment]):
         # Part 1: detector-based per-transcript end refinement. Build read-terminus
         # histograms from this model's own reads and snap each unsupported terminal
         # exon end to the dominant confident polyA/TSS peak (XGBoost detect_peaks);
@@ -86,7 +86,14 @@ class TranscriptEndProcessor:
                              (transcript_model.transcript_id, transcript_end, new_end))
                 transcript_model.exon_blocks[-1] = (last_exon_left, new_end)
 
-    def _mark_terminal_confirmation(self, model: TranscriptModel) -> None:
+        # These histograms depend on the inner terminal-exon boundaries. A
+        # monoexon's correction can change those boundaries; recompute then.
+        if (transcript_model.exon_blocks[0][1] == first_exon_right
+                and transcript_model.exon_blocks[-1][0] == last_exon_left):
+            return start_reads, end_reads
+        return None
+
+    def _mark_terminal_confirmation(self, model: TranscriptModel, histograms=None) -> None:
         # Record whether the model's polyA (3') / TSS (5') terminus is supported by a
         # read-terminus peak among its own reads, using the same histograms as
         # correct_novel_transcript_ends (the 3' side counts polyA-confirmed reads only).
@@ -95,7 +102,8 @@ class TranscriptEndProcessor:
         if not reads:
             model.polya_confirmed = model.tss_confirmed = False
             return
-        start_reads, end_reads = self._terminal_histograms(model, reads)
+        start_reads, end_reads = (histograms if histograms is not None else
+                                 self._terminal_histograms(model, reads))
         model_start = model.exon_blocks[0][0]
         model_end = model.exon_blocks[-1][1]
         start_supported = any(abs(p - model_start) <= self.args.apa_delta for p in start_reads)
@@ -252,10 +260,8 @@ class TranscriptEndProcessor:
                 new_models.append(nic)
                 # Hand the alternative-end peak's reads to the NIC so it is not a
                 # zero-read phantom; keep at least one read on the source.
-                for read in nic_reads:
-                    if len(self.store.transcript_read_ids[source_id]) <= 1:
-                        break
-                    self.store.move_read_to_model(read, source_id, nic.transcript_id, target_strand=nic.strand)
+                self.store.move_reads_to_model(nic_reads, source_id, nic.transcript_id,
+                                               target_strand=nic.strand, keep_source=1)
         if new_models:
             logger.debug("Added %d known alternative-end NICs" % len(new_models))
             self.store.transcript_model_storage.extend(new_models)

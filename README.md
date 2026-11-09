@@ -253,6 +253,13 @@ composes with reference gene-only preservation when no model survives, without
 creating or confirming a transcript model. Recollect BAM assignments to apply
 this classification change to reference counts; old caches are not reclassified.
 
+Construction performance changes preserve the existing decisions and counts:
+alternative-end read transfers use ordered batches (small batches retain the
+scalar path); immediate end confirmation reuses the correction histograms only
+when their terminal-exon bounds remain valid. Finalized graph terminal candidates
+are cached per intron/side without changing native order or tie handling.
+No read-match result cache or additional parallel scheduling is introduced.
+
 In final-model output, inherited reasons use `reference_gene_assignment_reason`.
 Only reasons established by the final matcher use `gene_assignment_reason`.
 Gene-only fallback provenance, weights and confirmation gates are unchanged.
@@ -276,6 +283,7 @@ python -m unittest \
     isoquant_tests.test_terminal_gene_ambiguity isoquant_tests.test_path_polya_evidence \
     isoquant_tests.test_model_filter_eligibility isoquant_tests.test_known_chain_index \
     isoquant_tests.test_stranded_exon_correction isoquant_tests.test_model_strand_identity \
-    isoquant_tests.test_gene_output_metadata isoquant_tests.test_reference_reason_provenance -v
+    isoquant_tests.test_gene_output_metadata isoquant_tests.test_reference_reason_provenance \
+    isoquant_tests.test_basic_performance -v
 ```
 

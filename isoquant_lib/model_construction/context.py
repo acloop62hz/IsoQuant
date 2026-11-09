@@ -13,7 +13,7 @@
 #   ModelConstructionContext   -- (added in a later step) the read-only inputs
 #                                 and the intron graph.
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from enum import Enum, unique
 from typing import Dict, List
 
@@ -113,6 +113,50 @@ class ModelStore:
         self.internal_counter[source_id] -= 1
         self.read_assignment_counts[read_assignment.read_id] -= 1
         return self.save_assigned_read(read_assignment, target_id)
+
+    def move_reads_to_model(self, reads, source_id, target_id, target_strand=None, keep_source=1):
+        """Move an ordered batch, preserving scalar membership and counting rules."""
+        def scalar_moves():
+            moved = 0
+            for read in reads:
+                if len(self.transcript_read_ids[source_id]) <= keep_source:
+                    break
+                moved += self.move_read_to_model(read, source_id, target_id, target_strand)
+            return moved
+
+        if source_id == target_id or len(reads) < 16:
+            return scalar_moves()
+        source_reads = self.transcript_read_ids[source_id]
+        available = Counter(map(id, source_reads))
+        selected = []
+        for read in reads:
+            if len(source_reads) - len(selected) <= keep_source:
+                break
+            if not self.binding_compatible(read, target_id, target_strand):
+                continue
+            if available[id(read)] == 0:
+                # Retain scalar partial-progress/error behaviour for invalid input.
+                return scalar_moves()
+            available[id(read)] -= 1
+            selected.append(read)
+        if not selected:
+            return 0
+        removals = Counter(map(id, selected))
+        retained = []
+        for read in source_reads:
+            key = id(read)
+            if removals[key]:
+                removals[key] -= 1
+            else:
+                retained.append(read)
+        source_reads[:] = retained
+        if target_strand is not None:
+            self._binding_strands[target_id] = target_strand
+        self.internal_counter[source_id] -= len(selected)
+        for read in selected:
+            self.read_assignment_counts[read.read_id] -= 1
+            self.save_assigned_read(read, target_id)
+        return len(selected)
 
     def delete_from_storage(self, transcript_id: str) -> None:
         for a in self.transcript_read_ids[transcript_id]:

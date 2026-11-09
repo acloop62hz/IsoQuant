@@ -68,6 +68,28 @@ class IntronPathProcessor:
         for edge_set in self.intron_graph.incoming_edges.values():
             self.all_vertices.update(edge_set)
         self.visited = set()
+        # The graph is finalized before this processor is constructed. Preserve
+        # its native candidate order, including first-match and equal-position ties.
+        self._terminal_candidates = {}
+
+    def _terminal_options(self, intron, left):
+        key = (intron, left)
+        if key not in self._terminal_candidates:
+            neighbours = self.intron_graph.get_incoming if left else self.intron_graph.get_outgoing
+            tail_type = TerminalVertex.polyt if left else TerminalVertex.polya
+            tss_type = TerminalVertex.tss_left if left else TerminalVertex.tss_right
+            bare_type = TerminalVertex.read_start if left else TerminalVertex.read_end
+            tails = tuple(neighbours(intron, tail_type))
+            introns = neighbours(intron)
+            boundary = None
+            if introns:
+                boundary = (min(v[1] for v in introns) + 1 if left else
+                            max(v[0] for v in introns) - 1)
+            tss = tuple(neighbours(intron, tss_type))
+            terminals = tuple(sorted(tuple(neighbours(intron, bare_type)) + tss + tails,
+                                     key=lambda v: v[1]))
+            self._terminal_candidates[key] = tails, boundary, tss, terminals
+        return self._terminal_candidates[key]
 
     def visit_vertex(self, v):
         if v in self.all_vertices:
@@ -86,17 +108,15 @@ class IntronPathProcessor:
         return path
 
     def thread_ends(self, intron, end, trusted=False):
-        possible_polyas = self.intron_graph.get_outgoing(intron, TerminalVertex.polya)
+        possible_polyas, rightmost_exon_end, tss, all_possible_ends = self._terminal_options(intron, False)
         if trusted:
             # find closes polyA
             for v in possible_polyas:
                 if abs(v[1] - end) <= self.params.apa_delta:
                     return v
 
-        outgoing_introns = self.intron_graph.get_outgoing(intron)
-        if len(outgoing_introns) > 0:
+        if rightmost_exon_end is not None:
             # intron has outgoing edges
-            rightmost_exon_end = max([intron[0] for intron in outgoing_introns]) - 1
             if not trusted and end <= rightmost_exon_end + self.params.delta:
                 # read end lies within next exon and has no polyA
                 return None
@@ -106,7 +126,7 @@ class IntronPathProcessor:
         # extreme/second-last comparison below: it is attached without a coverage
         # cutoff, so a 2-read TSS vertex sitting past a dominant read-end vertex
         # would otherwise disqualify the whole read-end population.
-        for v in self.intron_graph.get_outgoing(intron, TerminalVertex.tss_right):
+        for v in tss:
             if abs(v[1] - end) <= self.params.apa_delta:
                 return v
 
@@ -114,9 +134,6 @@ class IntronPathProcessor:
         # confirmed 5' TSS ends, and confirmed polyA ends). A TSS vertex is safe
         # to compare against here because the bare read-end cluster is now built
         # only from termini beyond every confirmed site on this side.
-        all_possible_ends = sorted(list(self.intron_graph.get_outgoing(intron, TerminalVertex.read_end)) +
-                                   list(self.intron_graph.get_outgoing(intron, TerminalVertex.tss_right)) +
-                                   list(possible_polyas), key=lambda x: x[1])
         if len(all_possible_ends) == 0:
             return None
 
@@ -131,28 +148,23 @@ class IntronPathProcessor:
         return None
 
     def thread_starts(self, intron, start, trusted=False):
-        possible_polyas = self.intron_graph.get_incoming(intron, TerminalVertex.polyt)
+        possible_polyas, leftmost_exon_start, tss, all_possible_starts = self._terminal_options(intron, True)
         if trusted:
             # find closes polyT
             for v in possible_polyas:
                 if abs(v[1] - start) <= self.params.apa_delta:
                     return v
 
-        incoming_introns = self.intron_graph.get_incoming(intron)
-        if len(incoming_introns) > 0:
+        if leftmost_exon_start is not None:
             # intron has outgoing edges
-            leftmost_exon_start = min([intron[1] for intron in incoming_introns]) + 1
             if not trusted and start >= leftmost_exon_start - self.params.delta:
                 # read start lies within previous exon and has no polyA
                 return None
 
-        for v in self.intron_graph.get_incoming(intron, TerminalVertex.tss_left):
+        for v in tss:
             if abs(v[1] - start) <= self.params.apa_delta:
                 return v
 
-        all_possible_starts = sorted(list(self.intron_graph.get_incoming(intron, TerminalVertex.read_start)) +
-                                     list(self.intron_graph.get_incoming(intron, TerminalVertex.tss_left)) +
-                                     list(possible_polyas), key=lambda x: x[1])
         if len(all_possible_starts) == 0:
             return None
 
